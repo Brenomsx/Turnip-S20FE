@@ -4,13 +4,34 @@ on:
   workflow_dispatch:
     inputs:
       mesa_ref:
-        description: "Branch ou tag do Mesa"
+        description: "Branch ou tag do Mesa (a versão que já compilou foi mesa-24.3.0)"
         required: true
         default: "mesa-24.3.0"
       ndk_version:
-        description: "Versão do Android NDK"
+        description: "Versão do Android NDK (ex: r27c)"
         required: true
         default: "r27c"
+      heap_percent:
+        description: "Heap Vulkan reportado: % máxima da RAM total (ex: 45)"
+        required: true
+        default: "45"
+      heap_cap_mb:
+        description: "Heap Vulkan reportado: teto absoluto em MB (ex: 2560)"
+        required: true
+        default: "2560"
+      opt_level:
+        description: "Nível de otimização do compilador"
+        required: true
+        type: choice
+        options:
+          - O2
+          - O3
+        default: O2
+      enable_lto:
+        description: "Ativar ThinLTO (mais rápido em tese, porém menos estável)"
+        required: true
+        type: boolean
+        default: false
 
 env:
   DRIVER_NAME: "Turnip S20 FE 5G Pro - v1.0"
@@ -23,43 +44,132 @@ jobs:
     timeout-minutes: 90
 
     steps:
+      - name: Validar entradas
+        env:
+          HEAP_PERCENT: ${{ inputs.heap_percent }}
+          HEAP_CAP_MB: ${{ inputs.heap_cap_mb }}
+        run: |
+          [[ "$HEAP_PERCENT" =~ ^[0-9]+$ ]] && [ "$HEAP_PERCENT" -ge 10 ] && [ "$HEAP_PERCENT" -le 90 ] \
+            || { echo "::error::heap_percent deve ser um inteiro entre 10 e 90"; exit 1; }
+          [[ "$HEAP_CAP_MB" =~ ^[0-9]+$ ]] && [ "$HEAP_CAP_MB" -ge 512 ] \
+            || { echo "::error::heap_cap_mb deve ser um inteiro >= 512"; exit 1; }
+
       - name: Instalar dependências do sistema
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            python3 python3-pip python3-venv python3-mako python3-yaml python3-lxml \
-            glslang-tools flex bison pkg-config zip unzip patchelf \
+            python3 python3-pip python3-venv python3-mako python3-yaml \
+            glslang-tools flex bison pkg-config zip unzip patchelf file \
             git curl ca-certificates build-essential
           python3 -m pip install --break-system-packages --upgrade \
-            meson ninja mako pyyaml packaging ply lxml
+            meson ninja mako pyyaml packaging ply
           meson --version
           ninja --version
 
       - name: Baixar e configurar Android NDK
+        env:
+          NDK_VERSION: ${{ inputs.ndk_version }}
         run: |
           curl -fL -o ndk.zip \
-            "https://dl.google.com/android/repository/android-ndk-${{ inputs.ndk_version }}-linux.zip"
+            "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
           unzip -q ndk.zip -d "$HOME"
           NDK_DIR=$(ls -d "$HOME"/android-ndk-* | head -n1)
           echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
           echo "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
           "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
 
-      - name: Clonar Mesa 3D e Dependências SPIRV
+      - name: Clonar Mesa 3D
+        env:
+          MESA_REF: ${{ inputs.mesa_ref }}
         run: |
-          git clone --depth=1 --branch "${{ inputs.mesa_ref }}" \
+          git clone --depth=1 --branch "$MESA_REF" \
             https://gitlab.freedesktop.org/mesa/mesa.git mesa
-          mkdir -p mesa/subprojects
-          git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Tools.git mesa/subprojects/spirv-tools
-          git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Headers.git mesa/subprojects/spirv-headers
           cd mesa
           echo "Mesa version: $(cat VERSION)"
           git log -1 --oneline
 
+      - name: Aplicar patch de limite do heap (6 GB de RAM)
+        working-directory: mesa/src/freedreno/vulkan
+        env:
+          HEAP_PERCENT: ${{ inputs.heap_percent }}
+          HEAP_CAP_MB: ${{ inputs.heap_cap_mb }}
+        run: |
+          # O Turnip reporta 3/4 da RAM total como heap Vulkan quando há mais de
+          # 4 GB. Num aparelho de 6 GB isso passa de 4 GB, o que convida o
+          # jogo/emulador a reservar memória demais e leva o lmkd a matar o
+          # processo no primeiro load pesado. Este patch insere, no final de
+          # tu_get_system_heap_size(), dois limites: um percentual da RAM total
+          # e um teto absoluto em MB. O build FALHA se o ponto de inserção não
+          # existir, para nunca gerar um driver sem o patch sem você perceber.
+          python3 - <<'PY'
+          import os, pathlib, re, sys
+
+          pct = int(os.environ["HEAP_PERCENT"])
+          cap = int(os.environ["HEAP_CAP_MB"])
+          MARK = "S20FE_HEAP_CLAMP"
+
+          cands = sorted(pathlib.Path(".").glob("tu_device.c*"))
+          if not cands:
+              sys.exit("ERRO: tu_device.c/.cc não encontrado em src/freedreno/vulkan")
+          path = cands[0]
+          src = path.read_text()
+
+          if MARK in src:
+              print("Patch já aplicado, nada a fazer.")
+              sys.exit(0)
+
+          m = re.search(r'\btu_get_system_heap_size\s*\([^)]*\)\s*\{', src)
+          if not m:
+              sys.exit("ERRO: função tu_get_system_heap_size não encontrada em %s" % path)
+
+          start = m.end()
+          r = src.find("return available_ram;", start)
+          if r == -1 or r - start > 2500:
+              sys.exit("ERRO: 'return available_ram;' não encontrado dentro de tu_get_system_heap_size")
+          if "total_ram" not in src[start:r]:
+              sys.exit("ERRO: variável total_ram não existe nesta função; ajuste o patch")
+
+          clamp = (
+              "/* %s: limita o heap reportado (RAM de 6 GB / LMK) */\n"
+              "   {\n"
+              "      uint64_t s20fe_pct_cap = total_ram / 100ull * %dull;\n"
+              "      uint64_t s20fe_abs_cap = %dull * 1024ull * 1024ull;\n"
+              "      if (available_ram > s20fe_pct_cap)\n"
+              "         available_ram = s20fe_pct_cap;\n"
+              "      if (available_ram > s20fe_abs_cap)\n"
+              "         available_ram = s20fe_abs_cap;\n"
+              "   }\n\n   "
+          ) % (MARK, pct, cap)
+
+          src = src[:r] + clamp + src[r:]
+          path.write_text(src)
+          print("Patch aplicado em %s (min(%d%% da RAM, %d MB))" % (path, pct, cap))
+          PY
+          PATCH_RC=$?
+          if [ $PATCH_RC -ne 0 ]; then
+            echo "::error::Patch do heap falhou. Contexto encontrado no código:"
+            grep -n -E "heap|totalram|sysinfo|available_ram" tu_device.c* || true
+            exit 1
+          fi
+          grep -q "S20FE_HEAP_CLAMP" tu_device.c* || { echo "::error::Marcador do patch ausente"; exit 1; }
+          echo "----- diff aplicado -----"
+          git -C "$GITHUB_WORKSPACE/mesa" --no-pager diff -U3
+
       - name: Criar android-crossfile.txt
+        env:
+          OPT: ${{ inputs.opt_level }}
+          LTO: ${{ inputs.enable_lto }}
         run: |
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          CPU_FLAGS="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-O3', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
+
+          # Flags de CPU do Snapdragon 865 (Kryo 585: A77 + A55)
+          COMMON="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT}', '-g1', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
+          LINK="'-Wl,--gc-sections'"
+          if [ "$LTO" = "true" ]; then
+            COMMON="$COMMON, '-flto=thin'"
+            LINK="$LINK, '-flto=thin'"
+          fi
+
           cat > "$GITHUB_WORKSPACE/android-crossfile.txt" <<EOF
           [binaries]
           c = ['$BIN/aarch64-linux-android${ANDROID_API}-clang']
@@ -81,24 +191,32 @@ jobs:
           needs_exe_wrapper = true
 
           [built-in options]
-          c_args = [$CPU_FLAGS]
-          cpp_args = [$CPU_FLAGS]
-          c_link_args = ['-Wl,--gc-sections']
-          cpp_link_args = ['-Wl,--gc-sections', '-static-libstdc++']
+          c_args = [$COMMON]
+          cpp_args = [$COMMON]
+          c_link_args = [$LINK]
+          cpp_link_args = [$LINK, '-static-libstdc++']
           EOF
-          sed -i 's/^          //' "$GITHUB_WORKSPACE/android-crossfile.txt"
           cat "$GITHUB_WORKSPACE/android-crossfile.txt"
 
       - name: Configurar Meson
         working-directory: mesa
+        env:
+          LTO: ${{ inputs.enable_lto }}
         run: |
+          LTO_ARGS=(-Db_lto=false)
+          if [ "$LTO" = "true" ]; then
+            LTO_ARGS=(-Db_lto=true -Db_lto_mode=thin)
+          fi
+
+          # strip=false de propósito: o símbolo é removido manualmente depois,
+          # preservando uma cópia com símbolos para decodificar tombstones.
           meson setup build \
             --cross-file "$GITHUB_WORKSPACE/android-crossfile.txt" \
-            --force-fallback-for=expat,zlib,spirv-tools \
+            --force-fallback-for=expat,zlib \
             -Dbuildtype=release \
-            -Db_lto=false \
+            "${LTO_ARGS[@]}" \
             -Db_ndebug=true \
-            -Dstrip=true \
+            -Dstrip=false \
             -Dplatforms=android \
             -Dplatform-sdk-version=${ANDROID_API} \
             -Dandroid-stub=true \
@@ -129,18 +247,37 @@ jobs:
           test -f libvulkan_freedreno.so
           file libvulkan_freedreno.so
           ls -lh libvulkan_freedreno.so
+          echo "----- dependências dinâmicas -----"
           readelf -d libvulkan_freedreno.so | grep -E 'NEEDED|SONAME' || true
+          if readelf -d libvulkan_freedreno.so | grep -q 'libc++_shared'; then
+            echo "::error::A lib depende de libc++_shared.so, que não existe no aparelho."
+            exit 1
+          fi
+          echo "----- símbolos exportados relevantes -----"
+          nm -D --defined-only libvulkan_freedreno.so | grep -E 'vk_icdGetInstanceProcAddr|HMI|vkGetInstanceProcAddr' || true
 
       - name: Gerar meta.json e empacotar
+        env:
+          HEAP_PERCENT: ${{ inputs.heap_percent }}
+          HEAP_CAP_MB: ${{ inputs.heap_cap_mb }}
         run: |
-          mkdir -p pkg
+          BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          mkdir -p pkg symbols
+
+          # Cópia com símbolos (para decodificar tombstones com llvm-symbolizer)
+          cp mesa/build/src/freedreno/vulkan/libvulkan_freedreno.so symbols/
+
+          # Cópia final sem símbolos de depuração
           cp mesa/build/src/freedreno/vulkan/libvulkan_freedreno.so pkg/
+          "$BIN/llvm-strip" --strip-unneeded pkg/libvulkan_freedreno.so
+          ls -lh pkg/libvulkan_freedreno.so
+
           MESA_VER=$(cat mesa/VERSION)
           cat > pkg/meta.json <<EOF
           {
             "schemaVersion": 1,
             "name": "${DRIVER_NAME}",
-            "description": "Turnip (Mesa ${MESA_VER}) otimizado para Galaxy S20 FE 5G - Adreno 650 / Snapdragon 865",
+            "description": "Turnip (Mesa ${MESA_VER}) para Galaxy S20 FE 5G - Adreno 650. Heap Vulkan limitado a min(${HEAP_PERCENT}% da RAM, ${HEAP_CAP_MB} MB).",
             "author": "custom-build",
             "packageVersion": "1",
             "vendor": "Mesa",
@@ -149,15 +286,21 @@ jobs:
             "libraryName": "libvulkan_freedreno.so"
           }
           EOF
-          sed -i 's/^          //' pkg/meta.json
           python3 -m json.tool pkg/meta.json
+
           (cd pkg && zip -9 "$GITHUB_WORKSPACE/${ZIP_NAME}" libvulkan_freedreno.so meta.json)
           unzip -l "${ZIP_NAME}"
 
-      - name: Publicar artefato
+      - name: Publicar driver
         uses: actions/upload-artifact@v4
         with:
           name: Turnip-S20FE-Pro-v1.0
           path: Turnip-S20FE-Pro-v1.0.zip
           if-no-files-found: error
-          
+
+      - name: Publicar símbolos de depuração
+        uses: actions/upload-artifact@v4
+        with:
+          name: Turnip-S20FE-Pro-v1.0-symbols
+          path: symbols/libvulkan_freedreno.so
+          if-no-files-found: error
