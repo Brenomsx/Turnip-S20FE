@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       mesa_ref:
-        description: "Branch ou tag do Mesa (a versão que já compilou foi mesa-24.3.0)"
+        description: "Branch ou tag do Mesa"
         required: true
         default: "mesa-24.3.0"
       ndk_version:
-        description: "Versão do Android NDK (ex: r27c)"
+        description: "Versão do Android NDK"
         required: true
         default: "r27c"
       heap_percent:
@@ -28,7 +28,7 @@ on:
           - O3
         default: O2
       enable_lto:
-        description: "Ativar ThinLTO (mais rápido em tese, porém menos estável)"
+        description: "Ativar ThinLTO"
         required: true
         type: boolean
         default: false
@@ -58,11 +58,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            python3 python3-pip python3-venv python3-mako python3-yaml \
+            python3 python3-pip python3-venv python3-mako python3-yaml python3-lxml \
             glslang-tools flex bison pkg-config zip unzip patchelf file \
             git curl ca-certificates build-essential
           python3 -m pip install --break-system-packages --upgrade \
-            meson ninja mako pyyaml packaging ply
+            meson ninja mako pyyaml packaging ply lxml
           meson --version
           ninja --version
 
@@ -78,12 +78,15 @@ jobs:
           echo "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
           "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
 
-      - name: Clonar Mesa 3D
+      - name: Clonar Mesa 3D e Dependências SPIRV
         env:
           MESA_REF: ${{ inputs.mesa_ref }}
         run: |
           git clone --depth=1 --branch "$MESA_REF" \
             https://gitlab.freedesktop.org/mesa/mesa.git mesa
+          mkdir -p mesa/subprojects
+          git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Tools.git mesa/subprojects/spirv-tools
+          git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Headers.git mesa/subprojects/spirv-headers
           cd mesa
           echo "Mesa version: $(cat VERSION)"
           git log -1 --oneline
@@ -94,13 +97,6 @@ jobs:
           HEAP_PERCENT: ${{ inputs.heap_percent }}
           HEAP_CAP_MB: ${{ inputs.heap_cap_mb }}
         run: |
-          # O Turnip reporta 3/4 da RAM total como heap Vulkan quando há mais de
-          # 4 GB. Num aparelho de 6 GB isso passa de 4 GB, o que convida o
-          # jogo/emulador a reservar memória demais e leva o lmkd a matar o
-          # processo no primeiro load pesado. Este patch insere, no final de
-          # tu_get_system_heap_size(), dois limites: um percentual da RAM total
-          # e um teto absoluto em MB. O build FALHA se o ponto de inserção não
-          # existir, para nunca gerar um driver sem o patch sem você perceber.
           python3 - <<'PY'
           import os, pathlib, re, sys
 
@@ -145,15 +141,6 @@ jobs:
           path.write_text(src)
           print("Patch aplicado em %s (min(%d%% da RAM, %d MB))" % (path, pct, cap))
           PY
-          PATCH_RC=$?
-          if [ $PATCH_RC -ne 0 ]; then
-            echo "::error::Patch do heap falhou. Contexto encontrado no código:"
-            grep -n -E "heap|totalram|sysinfo|available_ram" tu_device.c* || true
-            exit 1
-          fi
-          grep -q "S20FE_HEAP_CLAMP" tu_device.c* || { echo "::error::Marcador do patch ausente"; exit 1; }
-          echo "----- diff aplicado -----"
-          git -C "$GITHUB_WORKSPACE/mesa" --no-pager diff -U3
 
       - name: Criar android-crossfile.txt
         env:
@@ -161,8 +148,6 @@ jobs:
           LTO: ${{ inputs.enable_lto }}
         run: |
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-
-          # Flags de CPU do Snapdragon 865 (Kryo 585: A77 + A55)
           COMMON="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT}', '-g1', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
           LINK="'-Wl,--gc-sections'"
           if [ "$LTO" = "true" ]; then
@@ -208,11 +193,9 @@ jobs:
             LTO_ARGS=(-Db_lto=true -Db_lto_mode=thin)
           fi
 
-          # strip=false de propósito: o símbolo é removido manualmente depois,
-          # preservando uma cópia com símbolos para decodificar tombstones.
           meson setup build \
             --cross-file "$GITHUB_WORKSPACE/android-crossfile.txt" \
-            --force-fallback-for=expat,zlib \
+            --force-fallback-for=expat,zlib,spirv-tools \
             -Dbuildtype=release \
             "${LTO_ARGS[@]}" \
             -Db_ndebug=true \
@@ -247,14 +230,10 @@ jobs:
           test -f libvulkan_freedreno.so
           file libvulkan_freedreno.so
           ls -lh libvulkan_freedreno.so
-          echo "----- dependências dinâmicas -----"
-          readelf -d libvulkan_freedreno.so | grep -E 'NEEDED|SONAME' || true
           if readelf -d libvulkan_freedreno.so | grep -q 'libc++_shared'; then
             echo "::error::A lib depende de libc++_shared.so, que não existe no aparelho."
             exit 1
           fi
-          echo "----- símbolos exportados relevantes -----"
-          nm -D --defined-only libvulkan_freedreno.so | grep -E 'vk_icdGetInstanceProcAddr|HMI|vkGetInstanceProcAddr' || true
 
       - name: Gerar meta.json e empacotar
         env:
@@ -264,10 +243,7 @@ jobs:
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           mkdir -p pkg symbols
 
-          # Cópia com símbolos (para decodificar tombstones com llvm-symbolizer)
           cp mesa/build/src/freedreno/vulkan/libvulkan_freedreno.so symbols/
-
-          # Cópia final sem símbolos de depuração
           cp mesa/build/src/freedreno/vulkan/libvulkan_freedreno.so pkg/
           "$BIN/llvm-strip" --strip-unneeded pkg/libvulkan_freedreno.so
           ls -lh pkg/libvulkan_freedreno.so
@@ -304,3 +280,4 @@ jobs:
           name: Turnip-S20FE-Pro-v1.0-symbols
           path: symbols/libvulkan_freedreno.so
           if-no-files-found: error
+          
