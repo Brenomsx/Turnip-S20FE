@@ -1,4 +1,4 @@
-name: Build Turnip S20 FE 5G Pro Max v3
+name: Build Turnip S20 FE 5G Pro Max v4
 
 on:
   workflow_dispatch:
@@ -34,8 +34,8 @@ on:
         default: true
 
 env:
-  DRIVER_NAME: "Turnip S20 FE 5G ProMax - v3.0"
-  ZIP_NAME: "Turnip-S20FE-ProMax-v3.0.zip"
+  DRIVER_NAME: "Turnip S20 FE 5G ProMax - v4.0"
+  ZIP_NAME: "Turnip-S20FE-ProMax-v4.0.zip"
   ANDROID_API: "30"
 
 jobs:
@@ -78,15 +78,12 @@ jobs:
           echo "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
           "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
 
-      - name: Clonar Mesa 3D e Dependências SPIRV
+      - name: Clonar Mesa 3D
         env:
           MESA_REF: ${{ inputs.mesa_ref }}
         run: |
           git clone --depth=1 --branch "$MESA_REF" \
             https://gitlab.freedesktop.org/mesa/mesa.git mesa
-          mkdir -p mesa/subprojects
-          git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Tools.git mesa/subprojects/spirv-tools
-          git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Headers.git mesa/subprojects/spirv-headers
           cd mesa
           echo "Mesa version: $(cat VERSION)"
           git log -1 --oneline
@@ -124,7 +121,7 @@ jobs:
               sys.exit("ERRO: 'return available_ram;' não encontrado")
 
           clamp = (
-              "/* %s: limite customizado ProMax v3 */\n"
+              "/* %s: limite customizado ProMax v4 */\n"
               "   {\n"
               "      uint64_t s20fe_pct_cap = total_ram / 100ull * %dull;\n"
               "      uint64_t s20fe_abs_cap = %dull * 1024ull * 1024ull;\n"
@@ -139,15 +136,16 @@ jobs:
           path.write_text(src)
           print("Patch aplicado com sucesso!")
           PY
+          git -C "$GITHUB_WORKSPACE/mesa" --no-pager diff -U3
 
-      - name: Criar android-crossfile.txt com Otimizações ProMax v3
+      - name: Criar android-crossfile.txt Seguro e Otimizado (ProMax v4)
         env:
           OPT: ${{ inputs.opt_level }}
           LTO: ${{ inputs.enable_lto }}
         run: |
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          # Flags avançadas do LLVM para vetorização e inline agressivo
-          COMMON="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT}', '-ffast-math', '-fno-math-errno', '-mllvm', '-inline-threshold=500', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
+          # Removido -ffast-math e -inline-threshold por segurança e estabilidade estrutural
+          COMMON="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT}', '-g1', '-fno-math-errno', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
           LINK="'-Wl,--gc-sections'"
           if [ "$LTO" = "true" ]; then
             COMMON="$COMMON, '-flto=thin'"
@@ -194,7 +192,7 @@ jobs:
 
           meson setup build \
             --cross-file "$GITHUB_WORKSPACE/android-crossfile.txt" \
-            --force-fallback-for=expat,zlib,spirv-tools \
+            --force-fallback-for=expat,zlib \
             -Dbuildtype=release \
             "${LTO_ARGS[@]}" \
             -Db_ndebug=true \
@@ -229,6 +227,10 @@ jobs:
           test -f libvulkan_freedreno.so
           file libvulkan_freedreno.so
           ls -lh libvulkan_freedreno.so
+          if readelf -d libvulkan_freedreno.so | grep -q 'libc++_shared'; then
+            echo "::error::A lib depende de libc++_shared.so, que não existe no aparelho."
+            exit 1
+          fi
 
       - name: Gerar meta.json e empacotar
         env:
@@ -247,9 +249,9 @@ jobs:
           {
             "schemaVersion": 1,
             "name": "${DRIVER_NAME}",
-            "description": "Turnip ProMax v3.0 (Mesa ${MESA_VER}) otimizado para S20 FE 5G (Adreno 650). LLVM vector/inline otimizado.",
-            "author": "custom-build-promax-v3",
-            "packageVersion": "3",
+            "description": "Turnip ProMax v4.0 (Mesa ${MESA_VER}) para S20 FE 5G. Otimizado com ThinLTO e seguro contra NaNs/Infs.",
+            "author": "custom-build-promax-v4",
+            "packageVersion": "4",
             "vendor": "Mesa",
             "driverVersion": "Mesa ${MESA_VER}",
             "minApi": 29,
@@ -263,14 +265,14 @@ jobs:
       - name: Publicar driver
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-S20FE-ProMax-v3.0
-          path: Turnip-S20FE-ProMax-v3.0.zip
+          name: Turnip-S20FE-ProMax-v4.0
+          path: Turnip-S20FE-ProMax-v4.0.zip
           if-no-files-found: error
 
       - name: Publicar símbolos de depuração
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-S20FE-ProMax-v3.0-symbols
+          name: Turnip-S20FE-ProMax-v4.0-symbols
           path: symbols/libvulkan_freedreno.so
           if-no-files-found: error
           
