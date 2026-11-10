@@ -1,16 +1,20 @@
-name: Build Turnip S20 FE 5G v6.0
+name: Build Turnip S20 FE 5G
 
 on:
   workflow_dispatch:
     inputs:
+      version:
+        description: "Número da versão do pacote (ex: 6.0, 6.1)"
+        required: true
+        default: "6.0"
       mesa_ref:
-        description: "Branch ou tag do Mesa (usado se mesa_commit estiver vazio ou não for encontrado)"
+        description: "Branch ou tag do Mesa (usado só se mesa_commit estiver vazio)"
         required: true
         default: "main"
       mesa_commit:
-        description: "Commit do Mesa a fixar (bc775a5c79 = base do TurnipZ 0.3.0). Vazio = ponta de mesa_ref"
+        description: "Commit do Mesa a fixar (faa3275848 = base testada da v6.0). Vazio = ponta de mesa_ref"
         required: false
-        default: "bc775a5c79"
+        default: "faa3275848"
       ndk_version:
         description: "Versão do Android NDK"
         required: true
@@ -20,7 +24,7 @@ on:
         required: true
         default: "0"
       opt_level:
-        description: "Nível de otimização do compilador"
+        description: "Nível de otimização do compilador (O2 = testado)"
         required: true
         type: choice
         options:
@@ -28,7 +32,12 @@ on:
           - O3
         default: O2
       enable_lto:
-        description: "Ativar ThinLTO"
+        description: "Ativar ThinLTO (desligado = testado)"
+        required: true
+        type: boolean
+        default: false
+      publish_release:
+        description: "Publicar o .zip numa Release do GitHub (link de download direto, sem zip duplo)"
         required: true
         type: boolean
         default: false
@@ -41,14 +50,17 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  DRIVER_NAME: "Turnip S20 FE 5G - v6.0"
-  ZIP_NAME: "Turnip-S20FE-v6.0.zip"
+  VERSION: ${{ inputs.version }}
+  DRIVER_NAME: "Turnip S20 FE 5G - v${{ inputs.version }}"
+  ZIP_NAME: "Turnip-S20FE-v${{ inputs.version }}.zip"
   ANDROID_API: "30"
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    permissions:
+      contents: write   # necessário só para a opção publish_release
 
     steps:
       - name: Validar entradas
@@ -56,6 +68,8 @@ jobs:
           HEAP_PERCENT: ${{ inputs.heap_percent }}
           MESA_COMMIT: ${{ inputs.mesa_commit }}
         run: |
+          [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]] \
+            || { echo "::error::version deve ser numérica (ex: 6.0 ou 6.1)"; exit 1; }
           [[ "$HEAP_PERCENT" =~ ^[0-9]+$ ]] && [ "$HEAP_PERCENT" -le 100 ] \
             || { echo "::error::heap_percent deve ser um inteiro entre 0 e 100"; exit 1; }
           if [ -n "$MESA_COMMIT" ]; then
@@ -101,11 +115,13 @@ jobs:
             if git rev-parse -q --verify "${MESA_COMMIT}^{commit}" >/dev/null; then
               TARGET="$MESA_COMMIT"
             else
-              echo "::warning::Commit $MESA_COMMIT não encontrado; usando $MESA_REF"
+              echo "::error::Commit $MESA_COMMIT não encontrado no histórico do Mesa. Deixe mesa_commit vazio para usar $MESA_REF."
+              exit 1
             fi
           fi
           git checkout -q "$TARGET"
           echo "MESA_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "MESA_DATE=$(git log -1 --format=%cs)" >> "$GITHUB_ENV"
           echo "Mesa version: $(cat VERSION)"
           git log -1 --oneline
 
@@ -281,6 +297,9 @@ jobs:
             echo "::error::A lib depende de libc++_shared.so, que não existe no aparelho."
             exit 1
           fi
+          if ! grep -q 'SONAME.*libvulkan_freedreno.so' <<<"$DYN"; then
+            echo "::warning::SONAME diferente de libvulkan_freedreno.so; confira o libraryName do meta.json"
+          fi
 
           SYMS=$(nm -D --defined-only "$LIB_PATH")
           if ! grep -qE 'vk_icdGetInstanceProcAddr|vkGetInstanceProcAddr|HMI' <<<"$SYMS"; then
@@ -290,7 +309,6 @@ jobs:
           UNDEF=$(nm -D --undefined-only "$LIB_PATH")
           echo "----- suporte a AHardwareBuffer (informativo) -----"
           grep -E 'AHardwareBuffer_(allocate|isSupported)' <<<"$UNDEF" || echo "(não importa AHardwareBuffer_*)"
-          grep -c 'tu_GetAndroidHardwareBufferPropertiesANDROID' <<<"$SYMS" || true
 
       - name: Gerar meta.json e empacotar
         env:
@@ -320,7 +338,7 @@ jobs:
             "name": "${DRIVER_NAME}",
             "description": "Turnip (Mesa ${MESA_VER}, ${SHORT_SHA}) para Galaxy S20 FE 5G - Adreno 650. ${OPT} + ${LTO_TXT}, ${HEAP_TXT}.",
             "author": "custom-build",
-            "packageVersion": "6",
+            "packageVersion": "${VERSION}",
             "vendor": "Mesa",
             "driverVersion": "Mesa ${MESA_VER}",
             "minApi": 30,
@@ -331,7 +349,7 @@ jobs:
 
           cat > symbols/buildinfo.txt <<EOF
           Driver:        ${DRIVER_NAME}
-          Mesa:          ${MESA_VER} (${MESA_SHA})
+          Mesa:          ${MESA_VER} (${MESA_SHA}, ${MESA_DATE})
           NDK:           ${NDK_VERSION}
           Android API:   ${ANDROID_API}
           Otimização:    ${OPT} / ${LTO_TXT}
@@ -344,25 +362,53 @@ jobs:
           {
             echo "### ${DRIVER_NAME}"
             echo ""
-            echo "- Mesa: \`${MESA_VER}\` (\`${SHORT_SHA}\`)"
+            echo "- Mesa: \`${MESA_VER}\` (\`${SHORT_SHA}\`, ${MESA_DATE})"
             echo "- Build: ${OPT} + ${LTO_TXT}, NDK ${NDK_VERSION}"
             echo "- ${HEAP_TXT}"
             echo "- SHA256: \`${SHA256}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
           (cd pkg && zip -9 "$GITHUB_WORKSPACE/${ZIP_NAME}" libvulkan_freedreno.so meta.json)
+          unzip -tq "${ZIP_NAME}"
           unzip -l "${ZIP_NAME}"
 
       - name: Publicar driver
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-S20FE-v6.0
-          path: Turnip-S20FE-v6.0.zip
+          name: Turnip-S20FE-v${{ inputs.version }}
+          path: ${{ env.ZIP_NAME }}
           if-no-files-found: error
 
       - name: Publicar símbolos e informações de build
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-S20FE-v6.0-symbols
+          name: Turnip-S20FE-v${{ inputs.version }}-symbols
           path: symbols/
           if-no-files-found: error
+
+      - name: Publicar Release (opcional)
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          SHORT_SHA=${MESA_SHA:0:10}
+          TAG="v${VERSION}-${SHORT_SHA}"
+          {
+            echo "Driver Turnip para Galaxy S20 FE 5G (Adreno 650)."
+            echo ""
+            echo '```'
+            cat symbols/buildinfo.txt
+            echo '```'
+            echo ""
+            echo "Instale o .zip direto no gerenciador de drivers do emulador/port, sem extrair."
+          } > release_notes.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP_NAME" --clobber
+          else
+            gh release create "$TAG" "$ZIP_NAME" \
+              --title "${DRIVER_NAME} (${SHORT_SHA})" \
+              --notes-file release_notes.md
+          fi
+          echo "Release publicada: $TAG" >> "$GITHUB_STEP_SUMMARY"
