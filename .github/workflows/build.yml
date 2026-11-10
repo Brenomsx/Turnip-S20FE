@@ -45,10 +45,13 @@ jobs:
           echo "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
           "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
 
-      - name: Clonar Mesa 3D
+      - name: Clonar Mesa 3D e Dependências SPIRV
         run: |
           git clone --depth=1 --branch "${{ inputs.mesa_ref }}" \
             https://gitlab.freedesktop.org/mesa/mesa.git mesa
+          mkdir -p mesa/subprojects
+          git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Tools.git mesa/subprojects/spirv-tools
+          git clone --depth=1 https://github.com/KhronosGroup/SPIRV-Headers.git mesa/subprojects/spirv-headers
           cd mesa
           echo "Mesa version: $(cat VERSION)"
           git log -1 --oneline
@@ -91,7 +94,7 @@ jobs:
         run: |
           meson setup build \
             --cross-file "$GITHUB_WORKSPACE/android-crossfile.txt" \
-            --force-fallback-for=expat,zlib \
+            --force-fallback-for=expat,zlib,spirv-tools \
             -Dbuildtype=release \
             -Db_lto=false \
             -Db_ndebug=true \
