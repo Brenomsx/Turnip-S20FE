@@ -69,9 +69,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             python3 python3-pip python3-venv python3-mako python3-yaml python3-lxml \
             glslang-tools flex bison pkg-config zip unzip patchelf file \
-            git curl ca-certificates build-essential \
-            llvm-dev libclang-dev libclang-cpp-dev libclc-dev \
-            libllvmspirvlib-dev spirv-tools libspirv-tools-dev
+            git curl ca-certificates build-essential
           python3 -m pip install --break-system-packages --upgrade \
             meson ninja mako pyyaml packaging ply jinja2 lxml
           meson --version
