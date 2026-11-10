@@ -1,10 +1,10 @@
-name: Build Turnip S20 FE 5G Pro Max v4
+name: Build Turnip S20 FE 5G v5.0
 
 on:
   workflow_dispatch:
     inputs:
       mesa_ref:
-        description: "Branch ou tag do Mesa"
+        description: "Branch ou tag do Mesa (testado e estável: mesa-24.3.0)"
         required: true
         default: "mesa-24.3.0"
       ndk_version:
@@ -28,20 +28,27 @@ on:
           - O3
         default: O3
       enable_lto:
-        description: "Ativar ThinLTO para máxima performance"
+        description: "Ativar ThinLTO"
         required: true
         type: boolean
         default: true
 
+permissions:
+  contents: read
+
+concurrency:
+  group: turnip-build-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  DRIVER_NAME: "Turnip S20 FE 5G ProMax - v4.0"
-  ZIP_NAME: "Turnip-S20FE-ProMax-v4.0.zip"
+  DRIVER_NAME: "Turnip S20 FE 5G - v5.0"
+  ZIP_NAME: "Turnip-S20FE-v5.0.zip"
   ANDROID_API: "30"
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     steps:
       - name: Validar entradas
@@ -85,10 +92,11 @@ jobs:
           git clone --depth=1 --branch "$MESA_REF" \
             https://gitlab.freedesktop.org/mesa/mesa.git mesa
           cd mesa
+          echo "MESA_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "Mesa version: $(cat VERSION)"
           git log -1 --oneline
 
-      - name: Aplicar patch de limite do heap otimizado (6 GB RAM)
+      - name: Aplicar patch de limite do heap (6 GB RAM)
         working-directory: mesa/src/freedreno/vulkan
         env:
           HEAP_PERCENT: ${{ inputs.heap_percent }}
@@ -117,11 +125,13 @@ jobs:
 
           start = m.end()
           r = src.find("return available_ram;", start)
-          if r == -1:
-              sys.exit("ERRO: 'return available_ram;' não encontrado")
+          if r == -1 or r - start > 4000:
+              sys.exit("ERRO: 'return available_ram;' não encontrado dentro da função")
+          if "total_ram" not in src[start:r]:
+              sys.exit("ERRO: variável total_ram não existe nesta função")
 
           clamp = (
-              "/* %s: limite customizado ProMax v4 */\n"
+              "/* %s: limite customizado v5.0 */\n"
               "   {\n"
               "      uint64_t s20fe_pct_cap = total_ram / 100ull * %dull;\n"
               "      uint64_t s20fe_abs_cap = %dull * 1024ull * 1024ull;\n"
@@ -134,11 +144,12 @@ jobs:
 
           src = src[:r] + clamp + src[r:]
           path.write_text(src)
-          print("Patch aplicado com sucesso!")
+          print("Patch aplicado em %s" % path)
           PY
+          grep -q "S20FE_HEAP_CLAMP" tu_device.c* || { echo "::error::Marcador do patch ausente"; exit 1; }
           git -C "$GITHUB_WORKSPACE/mesa" --no-pager diff -U3
 
-      - name: Criar android-crossfile.txt Seguro e Otimizado (ProMax v4)
+      - name: Criar android-crossfile.txt
         env:
           OPT: ${{ inputs.opt_level }}
           LTO: ${{ inputs.enable_lto }}
@@ -226,39 +237,86 @@ jobs:
         working-directory: mesa/build/src/freedreno/vulkan
         run: |
           test -f libvulkan_freedreno.so
-          file libvulkan_freedreno.so
           ls -lh libvulkan_freedreno.so
-          if readelf -d libvulkan_freedreno.so | grep -q 'libc++_shared'; then
+
+          FILE_INFO=$(file libvulkan_freedreno.so)
+          echo "$FILE_INFO"
+          grep -q "ARM aarch64" <<<"$FILE_INFO" \
+            || { echo "::error::A lib não é aarch64"; exit 1; }
+
+          DYN=$(readelf -d libvulkan_freedreno.so)
+          echo "----- dependências dinâmicas -----"
+          grep -E 'NEEDED|SONAME' <<<"$DYN" || true
+          if grep -q 'libc++_shared' <<<"$DYN"; then
             echo "::error::A lib depende de libc++_shared.so, que não existe no aparelho."
             exit 1
+          fi
+
+          SYMS=$(nm -D --defined-only libvulkan_freedreno.so)
+          echo "----- símbolos exportados relevantes -----"
+          grep -E 'vk_icdGetInstanceProcAddr|vkGetInstanceProcAddr|HMI' <<<"$SYMS" || true
+          if ! grep -qE 'vk_icdGetInstanceProcAddr|vkGetInstanceProcAddr|HMI' <<<"$SYMS"; then
+            echo "::warning::Nenhum símbolo de entrada Vulkan/HAL encontrado nos exports"
           fi
 
       - name: Gerar meta.json e empacotar
         env:
           HEAP_PERCENT: ${{ inputs.heap_percent }}
           HEAP_CAP_MB: ${{ inputs.heap_cap_mb }}
+          OPT: ${{ inputs.opt_level }}
+          LTO: ${{ inputs.enable_lto }}
+          NDK_VERSION: ${{ inputs.ndk_version }}
         run: |
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           mkdir -p pkg symbols
 
+          # Cópia com símbolos (para decodificar tombstones)
           cp mesa/build/src/freedreno/vulkan/libvulkan_freedreno.so symbols/
+          # Cópia final sem símbolos de depuração
           cp mesa/build/src/freedreno/vulkan/libvulkan_freedreno.so pkg/
           "$BIN/llvm-strip" --strip-unneeded pkg/libvulkan_freedreno.so
 
           MESA_VER=$(cat mesa/VERSION)
+          SHORT_SHA=${MESA_SHA:0:10}
+          if [ "$LTO" = "true" ]; then LTO_TXT="ThinLTO"; else LTO_TXT="sem LTO"; fi
+          SHA256=$(sha256sum pkg/libvulkan_freedreno.so | cut -d' ' -f1)
+
           cat > pkg/meta.json <<EOF
           {
             "schemaVersion": 1,
             "name": "${DRIVER_NAME}",
-            "description": "Turnip ProMax v4.0 (Mesa ${MESA_VER}) para S20 FE 5G. ThinLTO, heap limitado a min(${HEAP_PERCENT}% da RAM, ${HEAP_CAP_MB} MB).",
-            "author": "custom-build-promax-v4",
-            "packageVersion": "4",
+            "description": "Turnip (Mesa ${MESA_VER}) para Galaxy S20 FE 5G - Adreno 650. ${OPT} + ${LTO_TXT}, heap limitado a min(${HEAP_PERCENT}% da RAM, ${HEAP_CAP_MB} MB).",
+            "author": "custom-build",
+            "packageVersion": "5",
             "vendor": "Mesa",
             "driverVersion": "Mesa ${MESA_VER}",
             "minApi": 29,
             "libraryName": "libvulkan_freedreno.so"
           }
           EOF
+          python3 -m json.tool pkg/meta.json
+
+          # Informações de build (fora do zip do driver, para não alterar o pacote)
+          cat > symbols/buildinfo.txt <<EOF
+          Driver:        ${DRIVER_NAME}
+          Mesa:          ${MESA_VER} (${MESA_SHA})
+          NDK:           ${NDK_VERSION}
+          Android API:   ${ANDROID_API}
+          Otimização:    ${OPT} / ${LTO_TXT}
+          Heap:          min(${HEAP_PERCENT}% da RAM, ${HEAP_CAP_MB} MB)
+          SHA256 da lib: ${SHA256}
+          Data do build: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+          cat symbols/buildinfo.txt
+
+          {
+            echo "### ${DRIVER_NAME}"
+            echo ""
+            echo "- Mesa: \`${MESA_VER}\` (\`${SHORT_SHA}\`)"
+            echo "- Build: ${OPT} + ${LTO_TXT}, NDK ${NDK_VERSION}"
+            echo "- Heap: min(${HEAP_PERCENT}% da RAM, ${HEAP_CAP_MB} MB)"
+            echo "- SHA256: \`${SHA256}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           (cd pkg && zip -9 "$GITHUB_WORKSPACE/${ZIP_NAME}" libvulkan_freedreno.so meta.json)
           unzip -l "${ZIP_NAME}"
@@ -266,13 +324,13 @@ jobs:
       - name: Publicar driver
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-S20FE-ProMax-v4.0
-          path: Turnip-S20FE-ProMax-v4.0.zip
+          name: Turnip-S20FE-v5.0
+          path: Turnip-S20FE-v5.0.zip
           if-no-files-found: error
 
-      - name: Publicar símbolos de depuração
+      - name: Publicar símbolos e informações de build
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-S20FE-ProMax-v4.0-symbols
-          path: symbols/libvulkan_freedreno.so
+          name: Turnip-S20FE-v5.0-symbols
+          path: symbols/
           if-no-files-found: error
