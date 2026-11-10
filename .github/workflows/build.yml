@@ -1,4 +1,4 @@
-name: Build Turnip S20 FE 5G Pro Max
+name: Build Turnip S20 FE 5G Pro Max v3
 
 on:
   workflow_dispatch:
@@ -34,8 +34,8 @@ on:
         default: true
 
 env:
-  DRIVER_NAME: "Turnip S20 FE 5G Pro Max - v2.0"
-  ZIP_NAME: "Turnip-S20FE-ProMax-v2.0.zip"
+  DRIVER_NAME: "Turnip S20 FE 5G ProMax - v3.0"
+  ZIP_NAME: "Turnip-S20FE-ProMax-v3.0.zip"
   ANDROID_API: "30"
 
 jobs:
@@ -124,7 +124,7 @@ jobs:
               sys.exit("ERRO: 'return available_ram;' não encontrado")
 
           clamp = (
-              "/* %s: limite customizado ProMax */\n"
+              "/* %s: limite customizado ProMax v3 */\n"
               "   {\n"
               "      uint64_t s20fe_pct_cap = total_ram / 100ull * %dull;\n"
               "      uint64_t s20fe_abs_cap = %dull * 1024ull * 1024ull;\n"
@@ -140,13 +140,14 @@ jobs:
           print("Patch aplicado com sucesso!")
           PY
 
-      - name: Criar android-crossfile.txt com Otimizações ProMax
+      - name: Criar android-crossfile.txt com Otimizações ProMax v3
         env:
           OPT: ${{ inputs.opt_level }}
           LTO: ${{ inputs.enable_lto }}
         run: |
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          COMMON="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT}', '-ffast-math', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
+          # Flags avançadas do LLVM para vetorização e inline agressivo
+          COMMON="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT}', '-ffast-math', '-fno-math-errno', '-mllvm', '-inline-threshold=500', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
           LINK="'-Wl,--gc-sections'"
           if [ "$LTO" = "true" ]; then
             COMMON="$COMMON, '-flto=thin'"
@@ -246,9 +247,9 @@ jobs:
           {
             "schemaVersion": 1,
             "name": "${DRIVER_NAME}",
-            "description": "Turnip ProMax (Mesa ${MESA_VER}) otimizado para S20 FE 5G (Adreno 650). Heap max(${HEAP_PERCENT}%, ${HEAP_CAP_MB} MB) com LTO ativado.",
-            "author": "custom-build-promax",
-            "packageVersion": "2",
+            "description": "Turnip ProMax v3.0 (Mesa ${MESA_VER}) otimizado para S20 FE 5G (Adreno 650). LLVM vector/inline otimizado.",
+            "author": "custom-build-promax-v3",
+            "packageVersion": "3",
             "vendor": "Mesa",
             "driverVersion": "Mesa ${MESA_VER}",
             "minApi": 29,
@@ -262,14 +263,14 @@ jobs:
       - name: Publicar driver
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-S20FE-ProMax-v2.0
-          path: Turnip-S20FE-ProMax-v2.0.zip
+          name: Turnip-S20FE-ProMax-v3.0
+          path: Turnip-S20FE-ProMax-v3.0.zip
           if-no-files-found: error
 
       - name: Publicar símbolos de depuração
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-S20FE-ProMax-v2.0-symbols
+          name: Turnip-S20FE-ProMax-v3.0-symbols
           path: symbols/libvulkan_freedreno.so
           if-no-files-found: error
           
