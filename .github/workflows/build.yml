@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       mesa_ref:
-        description: "Branch ou tag do Mesa (ex: main, mesa-25.2.0)"
+        description: "Branch ou tag do Mesa"
         required: true
-        default: "main"
+        default: "mesa-24.3.0"
       ndk_version:
-        description: "Versão do Android NDK (ex: r27c)"
+        description: "Versão do Android NDK"
         required: true
         default: "r27c"
 
@@ -28,7 +28,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             python3 python3-pip python3-venv python3-mako python3-yaml python3-lxml \
-            glslang-tools spirv-tools flex bison pkg-config zip unzip patchelf \
+            glslang-tools flex bison pkg-config zip unzip patchelf \
             git curl ca-certificates build-essential
           python3 -m pip install --break-system-packages --upgrade \
             meson ninja mako pyyaml packaging ply lxml
@@ -91,7 +91,7 @@ jobs:
         run: |
           meson setup build \
             --cross-file "$GITHUB_WORKSPACE/android-crossfile.txt" \
-            --force-fallback-for=expat,zlib,spirv-tools \
+            --force-fallback-for=expat,zlib \
             -Dbuildtype=release \
             -Db_lto=false \
             -Db_ndebug=true \
