@@ -144,7 +144,6 @@ jobs:
           LTO: ${{ inputs.enable_lto }}
         run: |
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          # Removido -ffast-math e -inline-threshold por segurança e estabilidade estrutural
           COMMON="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT}', '-g1', '-fno-math-errno', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
           LINK="'-Wl,--gc-sections'"
           if [ "$LTO" = "true" ]; then
@@ -171,6 +170,8 @@ jobs:
 
           [properties]
           needs_exe_wrapper = true
+          # Impede o Meson de achar bibliotecas do HOST (ex: spirv-tools) via pkg-config
+          pkg_config_libdir = ['/nonexistent']
 
           [built-in options]
           c_args = [$COMMON]
@@ -249,7 +250,7 @@ jobs:
           {
             "schemaVersion": 1,
             "name": "${DRIVER_NAME}",
-            "description": "Turnip ProMax v4.0 (Mesa ${MESA_VER}) para S20 FE 5G. Otimizado com ThinLTO e seguro contra NaNs/Infs.",
+            "description": "Turnip ProMax v4.0 (Mesa ${MESA_VER}) para S20 FE 5G. ThinLTO, heap limitado a min(${HEAP_PERCENT}% da RAM, ${HEAP_CAP_MB} MB).",
             "author": "custom-build-promax-v4",
             "packageVersion": "4",
             "vendor": "Mesa",
@@ -275,4 +276,3 @@ jobs:
           name: Turnip-S20FE-ProMax-v4.0-symbols
           path: symbols/libvulkan_freedreno.so
           if-no-files-found: error
-          
