@@ -30,7 +30,6 @@ jobs:
             python3 python3-pip python3-venv python3-mako python3-yaml \
             glslang-tools flex bison pkg-config zip unzip patchelf \
             git curl ca-certificates build-essential
-          # Meson/Ninja recentes via pip (o Mesa main exige Meson novo)
           python3 -m pip install --break-system-packages --upgrade \
             meson ninja mako pyyaml packaging ply
           meson --version
@@ -54,38 +53,10 @@ jobs:
           echo "Mesa version: $(cat VERSION)"
           git log -1 --oneline
 
-      - name: Aplicar ajustes para Adreno 650 / 6 GB de RAM
-        working-directory: mesa/src/freedreno/vulkan
-        run: |
-          set -u
-          PATCHED=0
-
-          # --- 1) Reduzir o heap de memória reportado ao app ---
-          # O Turnip reporta 3/4 da RAM total como heap Vulkan quando há >4 GB.
-          # Em 6 GB isso são ~4,5 GB, valor alto demais num Android que já
-          # ocupa ~3 GB. Limitar a 1/2 (~3 GB) faz apps/jogos alocarem menos
-          # e reduz kills pelo Low Memory Killer.
-          TARGET=$(grep -rlE 'available_ram *= *total_ram *\* *3 */ *4' . || true)
-          if [ -n "$TARGET" ]; then
-            sed -i -E 's|available_ram = total_ram \* 3 / 4;|available_ram = total_ram / 2;|' $TARGET
-            echo "OK: heap Vulkan limitado a 1/2 da RAM em: $TARGET"
-            PATCHED=$((PATCHED+1))
-          else
-            echo "::warning::Âncora do heap (total_ram * 3 / 4) não encontrada nesta versão do Mesa. Patch NÃO aplicado."
-          fi
-
-          # --- 2) GMEM da Adreno 650 ---
-          # O GMEM da A650 (1 MiB) é fixo em hardware e já é totalmente usado
-          # pelo modo de binning do Turnip; não há constante segura para
-          # alterar via sed. Teste em runtime com TU_DEBUG=gmem / sysmem.
-
-          echo "Patches aplicados: $PATCHED"
-          git -C ../../.. --no-pager diff --stat || true
-
       - name: Criar android-crossfile.txt
         run: |
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          CPU_FLAGS="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-O3', '-flto=thin', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
+          CPU_FLAGS="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-O3', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
           cat > "$GITHUB_WORKSPACE/android-crossfile.txt" <<EOF
           [binaries]
           c = ['$BIN/aarch64-linux-android${ANDROID_API}-clang']
@@ -109,10 +80,9 @@ jobs:
           [built-in options]
           c_args = [$CPU_FLAGS]
           cpp_args = [$CPU_FLAGS]
-          c_link_args = ['-flto=thin', '-Wl,--gc-sections']
-          cpp_link_args = ['-flto=thin', '-Wl,--gc-sections', '-static-libstdc++']
+          c_link_args = ['-Wl,--gc-sections']
+          cpp_link_args = ['-Wl,--gc-sections', '-static-libstdc++']
           EOF
-          # remove a indentação do heredoc
           sed -i 's/^          //' "$GITHUB_WORKSPACE/android-crossfile.txt"
           cat "$GITHUB_WORKSPACE/android-crossfile.txt"
 
@@ -123,8 +93,7 @@ jobs:
             --cross-file "$GITHUB_WORKSPACE/android-crossfile.txt" \
             --force-fallback-for=expat,zlib \
             -Dbuildtype=release \
-            -Db_lto=true \
-            -Db_lto_mode=thin \
+            -Db_lto=false \
             -Db_ndebug=true \
             -Dstrip=true \
             -Dplatforms=android \
