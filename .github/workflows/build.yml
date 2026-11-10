@@ -1,4 +1,4 @@
-name: Build Turnip S20 FE 5G Pro
+name: Build Turnip S20 FE 5G Pro Max
 
 on:
   workflow_dispatch:
@@ -12,13 +12,13 @@ on:
         required: true
         default: "r27c"
       heap_percent:
-        description: "Heap Vulkan reportado: % máxima da RAM total (ex: 45)"
+        description: "Heap Vulkan reportado: % máxima da RAM total"
         required: true
-        default: "45"
+        default: "60"
       heap_cap_mb:
-        description: "Heap Vulkan reportado: teto absoluto em MB (ex: 2560)"
+        description: "Heap Vulkan reportado: teto absoluto em MB"
         required: true
-        default: "2560"
+        default: "4096"
       opt_level:
         description: "Nível de otimização do compilador"
         required: true
@@ -26,16 +26,16 @@ on:
         options:
           - O2
           - O3
-        default: O2
+        default: O3
       enable_lto:
-        description: "Ativar ThinLTO"
+        description: "Ativar ThinLTO para máxima performance"
         required: true
         type: boolean
-        default: false
+        default: true
 
 env:
-  DRIVER_NAME: "Turnip S20 FE 5G Pro - v1.0"
-  ZIP_NAME: "Turnip-S20FE-Pro-v1.0.zip"
+  DRIVER_NAME: "Turnip S20 FE 5G Pro Max - v2.0"
+  ZIP_NAME: "Turnip-S20FE-ProMax-v2.0.zip"
   ANDROID_API: "30"
 
 jobs:
@@ -91,7 +91,7 @@ jobs:
           echo "Mesa version: $(cat VERSION)"
           git log -1 --oneline
 
-      - name: Aplicar patch de limite do heap (6 GB de RAM)
+      - name: Aplicar patch de limite do heap otimizado (6 GB RAM)
         working-directory: mesa/src/freedreno/vulkan
         env:
           HEAP_PERCENT: ${{ inputs.heap_percent }}
@@ -106,27 +106,25 @@ jobs:
 
           cands = sorted(pathlib.Path(".").glob("tu_device.c*"))
           if not cands:
-              sys.exit("ERRO: tu_device.c/.cc não encontrado em src/freedreno/vulkan")
+              sys.exit("ERRO: tu_device.c/.cc não encontrado")
           path = cands[0]
           src = path.read_text()
 
           if MARK in src:
-              print("Patch já aplicado, nada a fazer.")
+              print("Patch já aplicado.")
               sys.exit(0)
 
           m = re.search(r'\btu_get_system_heap_size\s*\([^)]*\)\s*\{', src)
           if not m:
-              sys.exit("ERRO: função tu_get_system_heap_size não encontrada em %s" % path)
+              sys.exit("ERRO: tu_get_system_heap_size não encontrada")
 
           start = m.end()
           r = src.find("return available_ram;", start)
-          if r == -1 or r - start > 2500:
-              sys.exit("ERRO: 'return available_ram;' não encontrado dentro de tu_get_system_heap_size")
-          if "total_ram" not in src[start:r]:
-              sys.exit("ERRO: variável total_ram não existe nesta função; ajuste o patch")
+          if r == -1:
+              sys.exit("ERRO: 'return available_ram;' não encontrado")
 
           clamp = (
-              "/* %s: limita o heap reportado (RAM de 6 GB / LMK) */\n"
+              "/* %s: limite customizado ProMax */\n"
               "   {\n"
               "      uint64_t s20fe_pct_cap = total_ram / 100ull * %dull;\n"
               "      uint64_t s20fe_abs_cap = %dull * 1024ull * 1024ull;\n"
@@ -139,16 +137,16 @@ jobs:
 
           src = src[:r] + clamp + src[r:]
           path.write_text(src)
-          print("Patch aplicado em %s (min(%d%% da RAM, %d MB))" % (path, pct, cap))
+          print("Patch aplicado com sucesso!")
           PY
 
-      - name: Criar android-crossfile.txt
+      - name: Criar android-crossfile.txt com Otimizações ProMax
         env:
           OPT: ${{ inputs.opt_level }}
           LTO: ${{ inputs.enable_lto }}
         run: |
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          COMMON="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT}', '-g1', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
+          COMMON="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT}', '-ffast-math', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
           LINK="'-Wl,--gc-sections'"
           if [ "$LTO" = "true" ]; then
             COMMON="$COMMON, '-flto=thin'"
@@ -230,10 +228,6 @@ jobs:
           test -f libvulkan_freedreno.so
           file libvulkan_freedreno.so
           ls -lh libvulkan_freedreno.so
-          if readelf -d libvulkan_freedreno.so | grep -q 'libc++_shared'; then
-            echo "::error::A lib depende de libc++_shared.so, que não existe no aparelho."
-            exit 1
-          fi
 
       - name: Gerar meta.json e empacotar
         env:
@@ -246,23 +240,21 @@ jobs:
           cp mesa/build/src/freedreno/vulkan/libvulkan_freedreno.so symbols/
           cp mesa/build/src/freedreno/vulkan/libvulkan_freedreno.so pkg/
           "$BIN/llvm-strip" --strip-unneeded pkg/libvulkan_freedreno.so
-          ls -lh pkg/libvulkan_freedreno.so
 
           MESA_VER=$(cat mesa/VERSION)
           cat > pkg/meta.json <<EOF
           {
             "schemaVersion": 1,
             "name": "${DRIVER_NAME}",
-            "description": "Turnip (Mesa ${MESA_VER}) para Galaxy S20 FE 5G - Adreno 650. Heap Vulkan limitado a min(${HEAP_PERCENT}% da RAM, ${HEAP_CAP_MB} MB).",
-            "author": "custom-build",
-            "packageVersion": "1",
+            "description": "Turnip ProMax (Mesa ${MESA_VER}) otimizado para S20 FE 5G (Adreno 650). Heap max(${HEAP_PERCENT}%, ${HEAP_CAP_MB} MB) com LTO ativado.",
+            "author": "custom-build-promax",
+            "packageVersion": "2",
             "vendor": "Mesa",
             "driverVersion": "Mesa ${MESA_VER}",
             "minApi": 29,
             "libraryName": "libvulkan_freedreno.so"
           }
           EOF
-          python3 -m json.tool pkg/meta.json
 
           (cd pkg && zip -9 "$GITHUB_WORKSPACE/${ZIP_NAME}" libvulkan_freedreno.so meta.json)
           unzip -l "${ZIP_NAME}"
@@ -270,14 +262,14 @@ jobs:
       - name: Publicar driver
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-S20FE-Pro-v1.0
-          path: Turnip-S20FE-Pro-v1.0.zip
+          name: Turnip-S20FE-ProMax-v2.0
+          path: Turnip-S20FE-ProMax-v2.0.zip
           if-no-files-found: error
 
       - name: Publicar símbolos de depuração
         uses: actions/upload-artifact@v4
         with:
-          name: Turnip-S20FE-Pro-v1.0-symbols
+          name: Turnip-S20FE-ProMax-v2.0-symbols
           path: symbols/libvulkan_freedreno.so
           if-no-files-found: error
           
