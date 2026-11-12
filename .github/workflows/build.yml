@@ -98,6 +98,7 @@ jobs:
             python3 python3-venv python3-pip \
             build-essential git curl ca-certificates \
             flex bison pkg-config \
+            glslang-tools \
             zip unzip file xz-utils
           python3 -m venv "$RUNNER_TEMP/mesa-venv"
           "$RUNNER_TEMP/mesa-venv/bin/pip" install --upgrade pip
@@ -109,6 +110,8 @@ jobs:
           export PATH="$RUNNER_TEMP/mesa-venv/bin:$PATH"
           command -v meson
           command -v ninja
+          command -v glslangValidator
+          glslangValidator --version
           meson --version
           ninja --version
 
