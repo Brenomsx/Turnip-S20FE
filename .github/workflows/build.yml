@@ -103,7 +103,12 @@ jobs:
           "$RUNNER_TEMP/mesa-venv/bin/pip" install --upgrade pip
           "$RUNNER_TEMP/mesa-venv/bin/pip" install \
             meson ninja mako pyyaml packaging ply jinja2 pycparser
+          # GITHUB_PATH só altera o PATH das próximas etapas.
+          # Esta etapa também precisa atualizar o PATH do shell atual.
           echo "$RUNNER_TEMP/mesa-venv/bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/mesa-venv/bin:$PATH"
+          command -v meson
+          command -v ninja
           meson --version
           ninja --version
 
