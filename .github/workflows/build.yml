@@ -271,22 +271,20 @@ jobs:
           SYMS=$("$BIN/llvm-nm" -D --defined-only "$LIB_PATH")
           printf '%s\n' "$SYMS" | tee "$GITHUB_WORKSPACE/elf-defined-symbols.txt"
 
-          # A biblioteca libvulkan_freedreno.so usada por carregadores diretos
-          # pode expor vkGetInstanceProcAddr sem exportar a interface ICD do
-          # Vulkan Loader (vk_icdGetInstanceProcAddr).
+          # O build Android do Turnip pode ser empacotado como módulo HAL.
+          # Nesse formato, o símbolo de entrada exportado é HMI (alias Android
+          # de HAL_MODULE_INFO_SYM), não necessariamente os símbolos de ICD.
           EXPORTED_NAMES="$(awk '{print $NF}' <<<"$SYMS")"
-          if ! grep -Fxq 'vkGetInstanceProcAddr' <<<"$EXPORTED_NAMES" &&
-             ! grep -Fxq 'vk_icdGetInstanceProcAddr' <<<"$EXPORTED_NAMES"; then
-            echo "::error::Não foi encontrado vkGetInstanceProcAddr nem vk_icdGetInstanceProcAddr."
+          if grep -Fxq 'HMI' <<<"$EXPORTED_NAMES"; then
+            echo "Entrada Android HAL encontrada: HMI"
+          elif grep -Fxq 'vkGetInstanceProcAddr' <<<"$EXPORTED_NAMES"; then
+            echo "Entrada Vulkan direta encontrada: vkGetInstanceProcAddr"
+          elif grep -Fxq 'vk_icdGetInstanceProcAddr' <<<"$EXPORTED_NAMES"; then
+            echo "Entrada Vulkan ICD encontrada: vk_icdGetInstanceProcAddr"
+          else
+            echo "::error::Não foi encontrado HMI, vkGetInstanceProcAddr nem vk_icdGetInstanceProcAddr."
             echo "::error::Lista completa de símbolos exportados salva em elf-defined-symbols.txt."
             exit 1
-          fi
-
-          if grep -Fxq 'vkGetInstanceProcAddr' <<<"$EXPORTED_NAMES"; then
-            echo "Interface de carregamento direto encontrada: vkGetInstanceProcAddr"
-          fi
-          if grep -Fxq 'vk_icdGetInstanceProcAddr' <<<"$EXPORTED_NAMES"; then
-            echo "Interface Vulkan ICD encontrada: vk_icdGetInstanceProcAddr"
           fi
 
           echo "----- Referências AHardwareBuffer (informativo) -----"
