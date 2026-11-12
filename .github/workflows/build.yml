@@ -269,10 +269,24 @@ jobs:
           fi
 
           SYMS=$("$BIN/llvm-nm" -D --defined-only "$LIB_PATH")
-          printf '%s\n' "$SYMS" > "$GITHUB_WORKSPACE/elf-defined-symbols.txt"
-          if ! awk '{print $NF}' <<<"$SYMS" | grep -Fxq 'vk_icdGetInstanceProcAddr'; then
-            echo "::error::Símbolo vk_icdGetInstanceProcAddr ausente."
+          printf '%s\n' "$SYMS" | tee "$GITHUB_WORKSPACE/elf-defined-symbols.txt"
+
+          # A biblioteca libvulkan_freedreno.so usada por carregadores diretos
+          # pode expor vkGetInstanceProcAddr sem exportar a interface ICD do
+          # Vulkan Loader (vk_icdGetInstanceProcAddr).
+          EXPORTED_NAMES="$(awk '{print $NF}' <<<"$SYMS")"
+          if ! grep -Fxq 'vkGetInstanceProcAddr' <<<"$EXPORTED_NAMES" &&
+             ! grep -Fxq 'vk_icdGetInstanceProcAddr' <<<"$EXPORTED_NAMES"; then
+            echo "::error::Não foi encontrado vkGetInstanceProcAddr nem vk_icdGetInstanceProcAddr."
+            echo "::error::Lista completa de símbolos exportados salva em elf-defined-symbols.txt."
             exit 1
+          fi
+
+          if grep -Fxq 'vkGetInstanceProcAddr' <<<"$EXPORTED_NAMES"; then
+            echo "Interface de carregamento direto encontrada: vkGetInstanceProcAddr"
+          fi
+          if grep -Fxq 'vk_icdGetInstanceProcAddr' <<<"$EXPORTED_NAMES"; then
+            echo "Interface Vulkan ICD encontrada: vk_icdGetInstanceProcAddr"
           fi
 
           echo "----- Referências AHardwareBuffer (informativo) -----"
