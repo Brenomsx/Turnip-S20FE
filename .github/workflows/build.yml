@@ -40,6 +40,17 @@ on:
         required: true
         type: boolean
         default: false
+      channel:
+        description: "Canal (stable ou nightly)"
+        required: true
+        type: choice
+        options: [stable, nightly]
+        default: stable
+      since:
+        description: "Início do changelog em ISO (opcional, o vigia preenche)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -340,14 +351,46 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          CHANNEL: ${{ inputs.channel }}
+          SINCE: ${{ inputs.since }}
         run: |
           set -euo pipefail
-          TAG="v${VERSION}-${MESA_SHA:0:10}"
-          NOTES="Turnip para Galaxy S20 FE 5G (Adreno 650). Mesa ${MESA_SHA} (${MESA_DATE}). SHA-256: ${SHA256}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$ZIP_NAME" --clobber
+          SHORT="${MESA_SHA:0:10}"
+          ASSETS=("$ZIP_NAME")
+          if [ "$CHANNEL" = "nightly" ]; then
+            TAG="nightly-$(date -u +%Y%m%d)-${SHORT}"
+            TITLE="Nightly ${DRIVER_NAME} (${MESA_DATE}, ${SHORT})"
+            FLAGS="--prerelease"
           else
-            gh release create "$TAG" "$ZIP_NAME" --title "${DRIVER_NAME} v${VERSION}" --notes "$NOTES"
+            TAG="v${VERSION}-${SHORT}"
+            TITLE="${DRIVER_NAME} v${VERSION} (${SHORT})"
+            FLAGS="--latest"
+            cp "$ZIP_NAME" Turnip-S20FE.zip
+            ASSETS+=(Turnip-S20FE.zip)
+          fi
+          {
+            echo "Turnip para Galaxy S20 FE 5G (Snapdragon 865 / Adreno 650), canal ${CHANNEL}."
+            echo ""
+            echo "- Mesa: ${MESA_SHA} (${MESA_DATE})"
+            echo "- SHA-256 da biblioteca: ${SHA256}"
+            if [ -n "$SINCE" ]; then
+              echo ""
+              echo "### Mudanças do Turnip/freedreno no Mesa desde ${SINCE}"
+              curl -fsS "https://gitlab.freedesktop.org/api/v4/projects/mesa%2Fmesa/repository/commits?ref_name=main&path=src/freedreno&since=${SINCE}&per_page=40" \
+                | python3 -c 'import json,sys; [print("- "+c["short_id"]+" "+c["title"]) for c in json.load(sys.stdin)]' \
+                || echo "(changelog indisponível)"
+            fi
+          } > release_notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            gh release create "$TAG" "${ASSETS[@]}" --title "$TITLE" --notes-file release_notes.md $FLAGS
+          fi
+          if [ "$CHANNEL" = "nightly" ]; then
+            gh release list --limit 100 --json tagName,isPrerelease -q '.[] | select(.isPrerelease) | .tagName' \
+              | tail -n +6 | while read -r T; do
+                gh release delete "$T" --cleanup-tag --yes < /dev/null
+              done
           fi
 
 # FIM DO ARQUIVO
