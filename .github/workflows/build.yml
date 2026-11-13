@@ -14,7 +14,7 @@ on:
         default: "main"
         type: string
       mesa_commit:
-        description: "Commit do Mesa (hash abreviado aceito se estiver no histórico de mesa_ref). v8.2.1 usava faa3275848"
+        description: "Commit do Mesa (v8.2.1 usava faa3275848)"
         required: false
         default: "1c87c60"
         type: string
@@ -24,24 +24,19 @@ on:
         default: "r27c"
         type: string
       opt_level:
-        description: "Otimização (O3 = máximo desempenho)"
+        description: "Otimização"
         required: true
         type: choice
-        options:
-          - O3
-          - O2
+        options: [O3, O2]
         default: O3
       tu_debug_default:
-        description: "Opção extra TU_DEBUG embutida (none = padrão; prefira definir TU_DEBUG por jogo via variável de ambiente)"
+        description: "TU_DEBUG embutido (none recomendado)"
         required: true
         type: choice
-        options:
-          - none
-          - nolrz
-          - sysmem
+        options: [none, nolrz, sysmem]
         default: none
       publish_release:
-        description: "Publicar também em GitHub Releases"
+        description: "Publicar em Releases"
         required: true
         type: boolean
         default: false
@@ -58,8 +53,6 @@ env:
   DRIVER_NAME: Turnip S20 FE 5G
   ZIP_NAME: Turnip-S20FE-v${{ inputs.version }}.zip
   ANDROID_API: "30"
-  # Correções de KGSL do Turnip entraram no Mesa main nesta data (MR 44838).
-  # Bases anteriores não têm esses fixes.
   KGSL_FIX_DATE: "2026-10-08"
 
 jobs:
@@ -76,54 +69,24 @@ jobs:
           MESA_REF: ${{ inputs.mesa_ref }}
           MESA_COMMIT: ${{ inputs.mesa_commit }}
           NDK_VERSION: ${{ inputs.ndk_version }}
-          OPT_LEVEL: ${{ inputs.opt_level }}
         run: |
           set -euo pipefail
-          [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]] || {
-            echo "::error::Versão inválida: use números separados por pontos."
-            exit 1
-          }
-          [[ "$MESA_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || {
-            echo "::error::mesa_ref contém caracteres não permitidos."
-            exit 1
-          }
-          if [[ -n "$MESA_COMMIT" ]]; then
-            [[ "$MESA_COMMIT" =~ ^[0-9a-fA-F]{7,40}$ ]] || {
-              echo "::error::mesa_commit deve ter de 7 a 40 caracteres hexadecimais."
-              exit 1
-            }
-          fi
-          [[ "$NDK_VERSION" =~ ^r[0-9]+[a-z]?$ ]] || {
-            echo "::error::Versão do NDK inválida."
-            exit 1
-          }
-          [[ "$OPT_LEVEL" == "O2" || "$OPT_LEVEL" == "O3" ]] || {
-            echo "::error::opt_level deve ser O2 ou O3."
-            exit 1
-          }
+          [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]] || { echo "::error::Versão inválida"; exit 1; }
+          [[ "$MESA_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "::error::mesa_ref inválido"; exit 1; }
+          [[ -z "$MESA_COMMIT" || "$MESA_COMMIT" =~ ^[0-9a-fA-F]{7,40}$ ]] || { echo "::error::mesa_commit inválido"; exit 1; }
+          [[ "$NDK_VERSION" =~ ^r[0-9]+[a-z]?$ ]] || { echo "::error::NDK inválido"; exit 1; }
 
-      - name: Instalar dependências e ferramentas Python
+      - name: Instalar dependências
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            python3 python3-venv python3-pip \
-            build-essential git curl ca-certificates \
-            flex bison pkg-config \
-            glslang-tools \
-            zip unzip file xz-utils
-          python3 -m venv "$RUNNER_TEMP/mesa-venv"
-          "$RUNNER_TEMP/mesa-venv/bin/pip" install --upgrade pip
-          "$RUNNER_TEMP/mesa-venv/bin/pip" install \
-            meson ninja mako pyyaml packaging ply jinja2 pycparser
-          echo "$RUNNER_TEMP/mesa-venv/bin" >> "$GITHUB_PATH"
-          export PATH="$RUNNER_TEMP/mesa-venv/bin:$PATH"
-          command -v meson
-          command -v ninja
-          command -v glslangValidator
-          glslangValidator --version
-          meson --version
-          ninja --version
+            python3 python3-venv python3-pip build-essential git curl \
+            ca-certificates flex bison pkg-config glslang-tools zip unzip file xz-utils
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --upgrade pip
+          "$RUNNER_TEMP/venv/bin/pip" install meson ninja mako pyyaml packaging ply jinja2 pycparser
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
       - name: Cache do Android NDK
         uses: actions/cache@v4
@@ -131,24 +94,24 @@ jobs:
           path: ~/android-ndk-${{ inputs.ndk_version }}
           key: android-ndk-${{ runner.os }}-${{ inputs.ndk_version }}
 
-      - name: Baixar e configurar Android NDK
+      - name: Configurar Android NDK
         env:
           NDK_VERSION: ${{ inputs.ndk_version }}
         run: |
           set -euo pipefail
-          NDK_DIR="$HOME/android-ndk-${{ inputs.ndk_version }}"
-          if [ ! -x "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
+          NDK_DIR="$HOME/android-ndk-${NDK_VERSION}"
+          BIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          if [ ! -x "$BIN/clang" ]; then
             curl --fail --location --retry 3 \
               "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" \
-              --output "$RUNNER_TEMP/android-ndk.zip"
-            unzip -q "$RUNNER_TEMP/android-ndk.zip" -d "$HOME"
+              --output "$RUNNER_TEMP/ndk.zip"
+            unzip -q "$RUNNER_TEMP/ndk.zip" -d "$HOME"
           fi
-          test -x "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+          test -x "$BIN/clang"
           echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
-          echo "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
-          "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
+          echo "$BIN" >> "$GITHUB_PATH"
 
-      - name: Obter código-fonte Mesa
+      - name: Obter Mesa
         env:
           MESA_REF: ${{ inputs.mesa_ref }}
           MESA_COMMIT: ${{ inputs.mesa_commit }}
@@ -157,32 +120,19 @@ jobs:
           git clone --filter=tree:0 --no-checkout --branch "$MESA_REF" \
             https://gitlab.freedesktop.org/mesa/mesa.git mesa
           cd mesa
-
-          if [ -n "$MESA_COMMIT" ]; then
-            if ! git rev-parse --verify --quiet "${MESA_COMMIT}^{commit}" >/dev/null; then
-              echo "::error::O commit $MESA_COMMIT não está no histórico de $MESA_REF."
-              exit 1
-            fi
-            TARGET=$(git rev-parse "${MESA_COMMIT}^{commit}")
-          else
-            TARGET=$(git rev-parse "${MESA_REF}^{commit}")
-          fi
-
-          git checkout --detach "$TARGET"
-          MESA_DATE_VALUE="$(git log -1 --format=%cs)"
+          REF="${MESA_COMMIT:-$MESA_REF}"
+          git rev-parse --verify --quiet "${REF}^{commit}" >/dev/null || {
+            echo "::error::$REF não está no histórico de $MESA_REF"; exit 1; }
+          git checkout --detach "$(git rev-parse "${REF}^{commit}")"
+          D="$(git log -1 --format=%cs)"
           echo "MESA_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "MESA_DATE=$MESA_DATE_VALUE" >> "$GITHUB_ENV"
-          echo "Mesa VERSION: $(tr -d '\r\n' < VERSION)"
-          git log -1 --oneline
-
-          # Proteção: base anterior às correções de KGSL do Turnip no Mesa main.
-          if [[ "$MESA_DATE_VALUE" < "$KGSL_FIX_DATE" ]]; then
-            echo "::warning::Commit de $MESA_DATE_VALUE é anterior a $KGSL_FIX_DATE: esta base não tem as correções de KGSL (MR 44838) nem commits posteriores de estabilidade."
-            echo "### Aviso: base Mesa antiga (${MESA_DATE_VALUE})" >> "$GITHUB_STEP_SUMMARY"
-            echo "Sem as correções de KGSL do Mesa main de ${KGSL_FIX_DATE}." >> "$GITHUB_STEP_SUMMARY"
+          echo "MESA_DATE=$D" >> "$GITHUB_ENV"
+          echo "Mesa $(tr -d '\r\n' < VERSION)"; git log -1 --oneline
+          if [[ "$D" < "$KGSL_FIX_DATE" ]]; then
+            echo "::warning::Base de $D é anterior a $KGSL_FIX_DATE e não tem os fixes de KGSL (MR 44838)."
           fi
 
-      - name: Aplicar otimizações de código (Anti-Stutter SELinux)
+      - name: Aplicar patches SELinux
         working-directory: mesa
         env:
           TU_DBG: ${{ inputs.tu_debug_default }}
@@ -190,71 +140,54 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import os, pathlib, re
-
           tu_dbg = os.environ["TU_DBG"].strip()
 
-          # 1. Neutraliza consultas SELinux negadas durante compilação de shaders
-          spirv_path = pathlib.Path("src/compiler/spirv/spirv_to_nir.c")
-          if spirv_path.is_file():
-              src = spirv_path.read_text(encoding="utf-8", errors="replace")
-              new_src, n = re.subn(
-                  r'os_get_option\s*\(\s*"MESA_SPIRV_(DUMP|READ)_PATH"\s*\)',
-                  'NULL /* S20FE_NO_SELINUX_SPAM */',
-                  src
-              )
-              if n > 0:
-                  spirv_path.write_text(new_src, encoding="utf-8")
-                  print(f"SELinux SPIR-V: {n} chamadas bloqueadas em {spirv_path}")
-              else:
-                  print(f"AVISO: nenhuma chamada MESA_SPIRV_*_PATH encontrada em {spirv_path}")
-          else:
-              print(f"AVISO: {spirv_path} não existe nesta base do Mesa")
+          p = pathlib.Path("src/compiler/spirv/spirv_to_nir.c")
+          if p.is_file():
+              s = p.read_text(encoding="utf-8", errors="replace")
+              s, n = re.subn(r'os_get_option\s*\(\s*"MESA_SPIRV_(DUMP|READ)_PATH"\s*\)', 'NULL /* S20FE */', s)
+              if n:
+                  p.write_text(s, encoding="utf-8")
+              print(f"SPIR-V: {n} chamadas bloqueadas")
 
-          os_misc = pathlib.Path("src/util/os_misc.c")
-          if os_misc.is_file():
-              src = os_misc.read_text(encoding="utf-8", errors="replace")
-              m = re.search(r'\bos_get_android_option\s*\(\s*const\s+char\s*\*\s*([a-zA-Z0-9_]+)\s*\)\s*\{', src)
-              if m and "S20FE_SELINUX_HOTPATH" not in src:
-                  param = m.group(1)
-                  inject = (
-                      f'\n   /* S20FE_SELINUX_HOTPATH */\n'
-                      f'   if (strstr({param}, "SPIRV") || strstr({param}, "IR3") || strstr({param}, "TRACE"))\n'
-                      f'      return NULL;\n'
-                  )
-                  os_misc.write_text(src[:m.end()] + inject + src[m.end():], encoding="utf-8")
-                  print(f"SELinux Hotpath aplicado em {os_misc}")
+          p = pathlib.Path("src/util/os_misc.c")
+          if p.is_file():
+              s = p.read_text(encoding="utf-8", errors="replace")
+              m = re.search(r'\bos_get_android_option\s*\(\s*const\s+char\s*\*\s*(\w+)\s*\)\s*\{', s)
+              if m and "S20FE_HOTPATH" not in s:
+                  a = m.group(1)
+                  ins = (f'\n   /* S20FE_HOTPATH */\n'
+                         f'   if (strstr({a}, "SPIRV") || strstr({a}, "IR3") || strstr({a}, "TRACE"))\n'
+                         f'      return NULL;\n')
+                  p.write_text(s[:m.end()] + ins + s[m.end():], encoding="utf-8")
+                  print("Hotpath aplicado")
               elif not m:
-                  print(f"AVISO: os_get_android_option não encontrada em {os_misc}")
-          else:
-              print(f"AVISO: {os_misc} não existe nesta base do Mesa")
+                  print("AVISO: os_get_android_option não encontrada")
 
-          # 2. Aplica perfil TU_DEBUG opcional se selecionado
           if tu_dbg != "none":
               for p in sorted(pathlib.Path("src/freedreno/vulkan").rglob("tu_device.*")):
                   if p.suffix not in (".c", ".cc", ".cpp"):
                       continue
-                  src = p.read_text(encoding="utf-8", errors="replace")
-                  m = re.search(r'\btu_CreateInstance\s*\([^)]*\)\s*\{', src)
-                  if m and "S20FE_TU_DEBUG" not in src:
-                      inject = f'\n   /* S20FE_TU_DEBUG */\n   setenv("TU_DEBUG", "{tu_dbg}", 0);\n'
-                      p.write_text(src[:m.end()] + inject + src[m.end():], encoding="utf-8")
-                      print(f"TU_DEBUG='{tu_dbg}' configurado em {p}")
+                  s = p.read_text(encoding="utf-8", errors="replace")
+                  m = re.search(r'\btu_CreateInstance\s*\([^)]*\)\s*\{', s)
+                  if m and "S20FE_TU_DEBUG" not in s:
+                      ins = f'\n   /* S20FE_TU_DEBUG */\n   setenv("TU_DEBUG", "{tu_dbg}", 0);\n'
+                      p.write_text(s[:m.end()] + ins + s[m.end():], encoding="utf-8")
+                      print(f"TU_DEBUG={tu_dbg} em {p}")
                       break
           PY
           git --no-pager diff -U2 | tee "$GITHUB_WORKSPACE/applied-patches.diff"
-
-          # Proteção: patch que não casou com o código desta base.
           if [ ! -s "$GITHUB_WORKSPACE/applied-patches.diff" ]; then
-            echo "::warning::Nenhum patch foi aplicado (applied-patches.diff vazio). As regex podem não casar com esta base do Mesa; o spam de SELinux continuará."
-            echo "### Aviso: nenhum patch SELinux/TU_DEBUG foi aplicado" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Nenhum patch aplicado (diff vazio). As regex podem não casar com esta base."
           fi
 
-      - name: Criar cross-file Android AArch64
+      - name: Criar cross-file
         env:
           OPT_LEVEL: ${{ inputs.opt_level }}
         run: |
           set -euo pipefail
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          F="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT_LEVEL}', '-g1', '-fno-math-errno', '-fno-trapping-math', '-ffp-contract=on', '-fomit-frame-pointer', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
           cat > "$GITHUB_WORKSPACE/android-crossfile.txt" <<EOF
           [binaries]
           c = ['$BIN/aarch64-linux-android${ANDROID_API}-clang']
@@ -277,102 +210,67 @@ jobs:
           pkg_config_libdir = ['/nonexistent']
 
           [built-in options]
-          c_args = ['-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT_LEVEL}', '-g1', '-fno-math-errno', '-fno-trapping-math', '-ffp-contract=on', '-fomit-frame-pointer', '-fno-plt', '-fdata-sections', '-ffunction-sections']
-          cpp_args = ['-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT_LEVEL}', '-g1', '-fno-math-errno', '-fno-trapping-math', '-ffp-contract=on', '-fomit-frame-pointer', '-fno-plt', '-fdata-sections', '-ffunction-sections']
+          c_args = [$F]
+          cpp_args = [$F]
           c_link_args = ['-Wl,--gc-sections', '-Wl,-O2']
           cpp_link_args = ['-Wl,--gc-sections', '-Wl,-O2', '-static-libstdc++']
           EOF
           cat "$GITHUB_WORKSPACE/android-crossfile.txt"
 
-      - name: Configurar Mesa com Meson
+      - name: Configurar Meson
         working-directory: mesa
         run: |
           set -euo pipefail
           meson setup build \
             --cross-file "$GITHUB_WORKSPACE/android-crossfile.txt" \
             --force-fallback-for=expat,zlib \
-            -Dbuildtype=release \
-            -Db_lto=false \
-            -Db_ndebug=true \
-            -Dstrip=false \
-            -Dplatforms=android \
-            -Dplatform-sdk-version="$ANDROID_API" \
-            -Dandroid-stub=true \
-            -Dandroid-libbacktrace=disabled \
-            -Dvulkan-drivers=freedreno \
-            -Dfreedreno-kmds=kgsl \
-            -Dgallium-drivers= \
-            -Dvulkan-layers= \
-            -Dopengl=false \
-            -Dgles1=disabled \
-            -Dgles2=disabled \
-            -Degl=disabled \
-            -Dgbm=disabled \
-            -Dglx=disabled \
-            -Dllvm=disabled \
-            -Dbuild-tests=false \
-            -Dzstd=disabled
-
-          meson configure build | tee "$GITHUB_WORKSPACE/meson-configure.txt"
+            -Dbuildtype=release -Db_lto=false -Db_ndebug=true -Dstrip=false \
+            -Dplatforms=android -Dplatform-sdk-version="$ANDROID_API" \
+            -Dandroid-stub=true -Dandroid-libbacktrace=disabled \
+            -Dvulkan-drivers=freedreno -Dfreedreno-kmds=kgsl \
+            -Dgallium-drivers= -Dvulkan-layers= -Dopengl=false \
+            -Dgles1=disabled -Dgles2=disabled -Degl=disabled \
+            -Dgbm=disabled -Dglx=disabled -Dllvm=disabled \
+            -Dbuild-tests=false -Dzstd=disabled
+          meson configure build > "$GITHUB_WORKSPACE/meson-configure.txt"
           cp build/meson-logs/meson-log.txt "$GITHUB_WORKSPACE/meson-log.txt"
 
       - name: Compilar Turnip
         working-directory: mesa
         run: |
           set -euo pipefail
-          JOBS="$(nproc)"
-          echo "Compilando com $JOBS tarefas."
           if ninja -C build -t targets all | grep -Fq 'src/freedreno/vulkan/libvulkan_freedreno.so:'; then
-            ninja -C build -j"$JOBS" src/freedreno/vulkan/libvulkan_freedreno.so
+            ninja -C build -j"$(nproc)" src/freedreno/vulkan/libvulkan_freedreno.so
           else
-            echo "::notice::Alvo nomeado não listado; compilando os alvos padrão do build mínimo."
-            ninja -C build -j"$JOBS"
+            ninja -C build -j"$(nproc)"
           fi
-
-          mapfile -t LIBS < <(find build -type f -name libvulkan_freedreno.so -print)
-          if [ "${#LIBS[@]}" -ne 1 ]; then
-            printf 'Bibliotecas encontradas: %s\n' "${LIBS[*]:-(nenhuma)}"
-            echo "::error::Esperava exatamente uma libvulkan_freedreno.so."
-            exit 1
-          fi
+          mapfile -t LIBS < <(find build -type f -name libvulkan_freedreno.so)
+          [ "${#LIBS[@]}" -eq 1 ] || { echo "::error::Esperava 1 libvulkan_freedreno.so"; exit 1; }
           install -D "${LIBS[0]}" "$GITHUB_WORKSPACE/output/libvulkan_freedreno.so"
           echo "LIB_PATH=$GITHUB_WORKSPACE/output/libvulkan_freedreno.so" >> "$GITHUB_ENV"
 
-      - name: Validar ELF, arquitetura, dependências e símbolos
+      - name: Validar ELF e símbolos
         run: |
           set -euo pipefail
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           test -s "$LIB_PATH"
-          "$BIN/llvm-readelf" -h "$LIB_PATH" | tee "$GITHUB_WORKSPACE/elf-header.txt"
-          "$BIN/llvm-readelf" -h "$LIB_PATH" | grep -q 'ELF64'
-          "$BIN/llvm-readelf" -h "$LIB_PATH" | grep -q 'AArch64'
-
+          "$BIN/llvm-readelf" -h "$LIB_PATH" > "$GITHUB_WORKSPACE/elf-header.txt"
+          grep -q 'ELF64' "$GITHUB_WORKSPACE/elf-header.txt"
+          grep -q 'AArch64' "$GITHUB_WORKSPACE/elf-header.txt"
           DYN=$("$BIN/llvm-readelf" -d "$LIB_PATH")
-          printf '%s\n' "$DYN" | tee "$GITHUB_WORKSPACE/elf-dynamic.txt"
+          printf '%s\n' "$DYN" > "$GITHUB_WORKSPACE/elf-dynamic.txt"
           if grep -q 'libc++_shared.so' <<<"$DYN"; then
-            echo "::error::A biblioteca depende de libc++_shared.so. Este pacote não inclui essa dependência."
-            exit 1
+            echo "::error::Depende de libc++_shared.so"; exit 1
           fi
-          if ! grep -q 'SONAME.*libvulkan_freedreno.so' <<<"$DYN"; then
-            echo "::warning::SONAME ausente ou diferente; confirme a compatibilidade com o instalador."
-          fi
-
+          grep -q 'SONAME.*libvulkan_freedreno.so' <<<"$DYN" || echo "::warning::SONAME ausente ou diferente"
           SYMS=$("$BIN/llvm-nm" -D --defined-only "$LIB_PATH")
-          printf '%s\n' "$SYMS" | tee "$GITHUB_WORKSPACE/elf-defined-symbols.txt"
-
-          EXPORTED_NAMES="$(awk '{print $NF}' <<<"$SYMS")"
-          if grep -Fxq 'HMI' <<<"$EXPORTED_NAMES"; then
-            echo "Entrada Android HAL encontrada: HMI"
-          elif grep -Fxq 'vkGetInstanceProcAddr' <<<"$EXPORTED_NAMES"; then
-            echo "Entrada Vulkan direta encontrada: vkGetInstanceProcAddr"
-          elif grep -Fxq 'vk_icdGetInstanceProcAddr' <<<"$EXPORTED_NAMES"; then
-            echo "Entrada Vulkan ICD encontrada: vk_icdGetInstanceProcAddr"
-          else
-            echo "::error::Não foi encontrado HMI, vkGetInstanceProcAddr nem vk_icdGetInstanceProcAddr."
-            exit 1
+          printf '%s\n' "$SYMS" > "$GITHUB_WORKSPACE/elf-defined-symbols.txt"
+          NAMES="$(awk '{print $NF}' <<<"$SYMS")"
+          if ! grep -Exq 'HMI|vkGetInstanceProcAddr|vk_icdGetInstanceProcAddr' <<<"$NAMES"; then
+            echo "::error::Nenhum símbolo de entrada (HMI/vkGetInstanceProcAddr/vk_icd...)"; exit 1
           fi
 
-      - name: Gerar metadados, símbolos e ZIP
+      - name: Gerar ZIP e metadados
         env:
           OPT_LEVEL: ${{ inputs.opt_level }}
           NDK_VERSION: ${{ inputs.ndk_version }}
@@ -381,81 +279,45 @@ jobs:
           set -euo pipefail
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           mkdir -p pkg symbols
-
-          cp "$LIB_PATH" symbols/libvulkan_freedreno.so
-          cp "$LIB_PATH" pkg/libvulkan_freedreno.so
+          cp "$LIB_PATH" symbols/ && cp "$LIB_PATH" pkg/
           "$BIN/llvm-strip" --strip-unneeded pkg/libvulkan_freedreno.so
-
-          MESA_VER="$(tr -d '\r\n ' < mesa/VERSION)"
-          SHORT_SHA="${MESA_SHA:0:10}"
+          export MESA_VER="$(tr -d '\r\n ' < mesa/VERSION)"
+          export SHORT_SHA="${MESA_SHA:0:10}"
           SHA256="$(sha256sum pkg/libvulkan_freedreno.so | awk '{print $1}')"
-
-          export DRIVER_NAME VERSION MESA_VER SHORT_SHA ANDROID_API OPT_LEVEL NDK_VERSION SHA256 TU_DBG
+          export DRIVER_NAME VERSION ANDROID_API OPT_LEVEL TU_DBG
           python3 - <<'PY'
           import json, os
-          metadata = {
+          e = os.environ
+          meta = {
               "schemaVersion": 1,
-              "name": f'{os.environ["DRIVER_NAME"]} v{os.environ["VERSION"]}',
-              "description": (
-                  f'Turnip Mesa {os.environ["MESA_VER"]} '
-                  f'({os.environ["SHORT_SHA"]}) para Galaxy S20 FE 5G / Adreno 650. '
-                  f'{os.environ["OPT_LEVEL"]} + IEEE-754 FMA, SELinux Hotpath Fix, TU_DEBUG={os.environ["TU_DBG"]}.'
-              ),
+              "name": f'{e["DRIVER_NAME"]} v{e["VERSION"]}',
+              "description": f'Turnip Mesa {e["MESA_VER"]} ({e["SHORT_SHA"]}) para Galaxy S20 FE 5G / Adreno 650. {e["OPT_LEVEL"]} + FMA, SELinux Hotpath Fix, TU_DEBUG={e["TU_DBG"]}.',
               "author": "Turnip-S20FE custom build",
-              "packageVersion": os.environ["VERSION"],
+              "packageVersion": e["VERSION"],
               "vendor": "Mesa",
-              "driverVersion": f'Mesa {os.environ["MESA_VER"]}',
-              "minApi": int(os.environ["ANDROID_API"]),
-              "libraryName": "libvulkan_freedreno.so"
+              "driverVersion": f'Mesa {e["MESA_VER"]}',
+              "minApi": int(e["ANDROID_API"]),
+              "libraryName": "libvulkan_freedreno.so",
           }
           with open("pkg/meta.json", "w", encoding="utf-8") as f:
-              json.dump(metadata, f, ensure_ascii=False, indent=2)
+              json.dump(meta, f, ensure_ascii=False, indent=2)
               f.write("\n")
           PY
-          python3 -m json.tool pkg/meta.json
-
           cat > symbols/buildinfo.txt <<EOF
-          Driver:        ${DRIVER_NAME} v${VERSION}
-          Mesa:          ${MESA_VER} (${MESA_SHA}, ${MESA_DATE})
-          NDK:           ${NDK_VERSION}
-          Android API:   ${ANDROID_API}
-          Otimização:    ${OPT_LEVEL} + IEEE-754 FMA (sem LTO)
-          TU_DEBUG:      ${TU_DBG}
-          Patches:       SELinux SPIR-V/IR3 Hotpath Fix
-          SHA256:        ${SHA256}
-          Data UTC:      $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          Driver:  ${DRIVER_NAME} v${VERSION}
+          Mesa:    ${MESA_VER} (${MESA_SHA}, ${MESA_DATE})
+          NDK:     ${NDK_VERSION} / API ${ANDROID_API}
+          Build:   ${OPT_LEVEL} + FMA, sem LTO
+          TU_DEBUG: ${TU_DBG}
+          SHA256:  ${SHA256}
+          Data UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
           EOF
-
-          cp "$GITHUB_WORKSPACE/meson-configure.txt" symbols/
-          cp "$GITHUB_WORKSPACE/meson-log.txt" symbols/
-          cp "$GITHUB_WORKSPACE/elf-header.txt" symbols/
-          cp "$GITHUB_WORKSPACE/elf-dynamic.txt" symbols/
-          cp "$GITHUB_WORKSPACE/elf-defined-symbols.txt" symbols/
-          cp "$GITHUB_WORKSPACE/android-crossfile.txt" symbols/
-          cp "$GITHUB_WORKSPACE/applied-patches.diff" symbols/
-
-          (
-            cd pkg
-            zip -9 "$GITHUB_WORKSPACE/${ZIP_NAME}" libvulkan_freedreno.so meta.json
-          )
+          cp "$GITHUB_WORKSPACE"/{meson-configure,meson-log,elf-header,elf-dynamic,elf-defined-symbols,android-crossfile,applied-patches}.* symbols/
+          (cd pkg && zip -9 "$GITHUB_WORKSPACE/$ZIP_NAME" libvulkan_freedreno.so meta.json)
           unzip -tq "$ZIP_NAME"
-
-          mkdir -p "$RUNNER_TEMP/package-check"
-          unzip -q "$ZIP_NAME" -d "$RUNNER_TEMP/package-check"
-          cmp pkg/meta.json "$RUNNER_TEMP/package-check/meta.json"
-          test -s "$RUNNER_TEMP/package-check/libvulkan_freedreno.so"
-          PACKAGE_SHA="$(sha256sum "$RUNNER_TEMP/package-check/libvulkan_freedreno.so" | awk '{print $1}')"
-          echo "SHA256 da biblioteca no ZIP: $PACKAGE_SHA"
           echo "SHA256=$SHA256" >> "$GITHUB_ENV"
-
-          {
-            echo "### ${DRIVER_NAME} v${VERSION}"
-            echo ""
-            echo "- Mesa: \`${MESA_VER}\` (\`${SHORT_SHA}\`, ${MESA_DATE})"
-            echo "- Build: \`${OPT_LEVEL}\` + IEEE-754 FMA, LTO desativado, NDK ${NDK_VERSION}"
-            echo "- Otimizações S20 FE: SELinux Shader Hotpath Fix, TU_DEBUG=\`${TU_DBG}\`"
-            echo "- SHA-256: \`${SHA256}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "### ${DRIVER_NAME} v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Mesa \`${MESA_VER}\` (\`${SHORT_SHA}\`, ${MESA_DATE}) - SHA-256 \`${SHA256}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publicar artefato do driver
         uses: actions/upload-artifact@v4
@@ -465,7 +327,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publicar artefatos de diagnóstico
+      - name: Publicar diagnósticos
         uses: actions/upload-artifact@v4
         with:
           name: Turnip-S20FE-v${{ inputs.version }}-diagnostics
@@ -473,5 +335,19 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publicar GitHub Release (opcional)
+      - name: Publicar Release (opcional)
         if: inputs.publish_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}-${MESA_SHA:0:10}"
+          NOTES="Turnip para Galaxy S20 FE 5G (Adreno 650). Mesa ${MESA_SHA} (${MESA_DATE}). SHA-256: ${SHA256}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP_NAME" --clobber
+          else
+            gh release create "$TAG" "$ZIP_NAME" --title "${DRIVER_NAME} v${VERSION}" --notes "$NOTES"
+          fi
+
+# FIM DO ARQUIVO
