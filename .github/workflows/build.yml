@@ -474,4 +474,4 @@ jobs:
           retention-days: 30
 
       - name: Publicar GitHub Release (opcional)
-        if: ${{ inputs.publish_release
+        if: inputs.publish_release
