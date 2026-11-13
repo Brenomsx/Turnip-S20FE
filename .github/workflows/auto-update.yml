@@ -1,0 +1,56 @@
+name: Auto-update Turnip (vigia do Mesa)
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Forçar build mesmo sem commit novo no Mesa"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: turnip-auto-update
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Verificar Mesa e disparar build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Comparar com o último build e disparar
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          SHA="$(git ls-remote https://gitlab.freedesktop.org/mesa/mesa.git refs/heads/main | cut -f1)"
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Não consegui ler o main do Mesa"; exit 1; }
+          SHORT="${SHA:0:10}"
+          echo "Mesa main: $SHA"
+
+          TAGS="$(gh release list --limit 100 --json tagName -q '.[].tagName')"
+          if [ "$FORCE" != "true" ] && grep -q -- "-${SHORT}$" <<<"$TAGS"; then
+            echo "Sem novidades no Mesa (${SHORT}); já existe release." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          SINCE="$(gh release list --limit 1 --json publishedAt -q '.[0].publishedAt // empty')"
+          gh workflow run build.yml \
+            -f mesa_ref=main \
+            -f mesa_commit="$SHA" \
+            -f version="8.3.$(date -u +%Y%m%d)" \
+            -f channel=nightly \
+            -f publish_release=true \
+            -f since="$SINCE"
+          echo "Build nightly disparado para ${SHORT} (changelog desde: ${SINCE:-n/d})." | tee -a "$GITHUB_STEP_SUMMARY"
+
+# FIM DO ARQUIVO
