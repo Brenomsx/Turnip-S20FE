@@ -1,4 +1,4 @@
-name: Build Turnip S20 FE 5G v8.2
+name: Build Turnip S20 FE 5G v8.2.1
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       version:
         description: "Versão do pacote"
         required: true
-        default: "8.2"
+        default: "8.2.1"
         type: string
       mesa_ref:
         description: "Branch ou tag do Mesa"
@@ -31,11 +31,6 @@ on:
           - O3
           - O2
         default: O3
-      heap_percent:
-        description: "Limite de Heap Vulkan em % da RAM (55 = ideal para 6GB; 0 = sem limite)"
-        required: true
-        default: "55"
-        type: string
       tu_debug_default:
         description: "Opção extra TU_DEBUG (none = padrão rápido; nolrz = teste anti-congelamento BO2)"
         required: true
@@ -55,7 +50,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: turnip-build-${{ github.workflow }}-${{ github.ref }}-${{ github.run_id }}
+  group: turnip-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -79,7 +74,6 @@ jobs:
           MESA_COMMIT: ${{ inputs.mesa_commit }}
           NDK_VERSION: ${{ inputs.ndk_version }}
           OPT_LEVEL: ${{ inputs.opt_level }}
-          HEAP_PERCENT: ${{ inputs.heap_percent }}
         run: |
           set -euo pipefail
           [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]] || {
@@ -102,10 +96,6 @@ jobs:
           }
           [[ "$OPT_LEVEL" == "O2" || "$OPT_LEVEL" == "O3" ]] || {
             echo "::error::opt_level deve ser O2 ou O3."
-            exit 1
-          }
-          [[ "$HEAP_PERCENT" =~ ^[0-9]+$ ]] && [ "$HEAP_PERCENT" -le 90 ] || {
-            echo "::error::heap_percent deve ser um número entre 0 e 90."
             exit 1
           }
 
@@ -143,7 +133,7 @@ jobs:
           NDK_VERSION: ${{ inputs.ndk_version }}
         run: |
           set -euo pipefail
-          NDK_DIR="$HOME/android-ndk-${NDK_VERSION}"
+          NDK_DIR="$HOME/android-ndk-${{ inputs.ndk_version }}"
           if [ ! -x "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
             curl --fail --location --retry 3 \
               "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" \
@@ -168,7 +158,6 @@ jobs:
           if [ -n "$MESA_COMMIT" ]; then
             if ! git rev-parse --verify --quiet "${MESA_COMMIT}^{commit}" >/dev/null; then
               echo "::error::O commit $MESA_COMMIT não está no histórico de $MESA_REF."
-              echo "::error::Para commits fora desse histórico, informe o SHA completo de 40 caracteres."
               exit 1
             fi
             TARGET=$(git rev-parse "${MESA_COMMIT}^{commit}")
@@ -182,20 +171,18 @@ jobs:
           echo "Mesa VERSION: $(tr -d '\r\n' < VERSION)"
           git log -1 --oneline
 
-      - name: Aplicar otimizações de código (Anti-Stutter SELinux + Controle de RAM)
+      - name: Aplicar otimizações de código (Anti-Stutter SELinux)
         working-directory: mesa
         env:
-          HEAP_PERCENT: ${{ inputs.heap_percent }}
           TU_DBG: ${{ inputs.tu_debug_default }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import os, pathlib, re, sys
+          import os, pathlib, re
 
-          pct = int(os.environ["HEAP_PERCENT"])
           tu_dbg = os.environ["TU_DBG"].strip()
 
-          # 1. Neutraliza consultas SELinux negadas durante compilação de shaders (elimina stutters no GTA 4 e BO2)
+          # 1. Neutraliza consultas SELinux negadas durante compilação de shaders
           spirv_path = pathlib.Path("src/compiler/spirv/spirv_to_nir.c")
           if spirv_path.is_file():
               src = spirv_path.read_text(encoding="utf-8", errors="replace")
@@ -222,26 +209,7 @@ jobs:
                   os_misc.write_text(src[:m.end()] + inject + src[m.end():], encoding="utf-8")
                   print(f"SELinux Hotpath aplicado em {os_misc}")
 
-          # 2. Configura limite de Heap na opção nativa do Mesa 27 (evita sobrecarga nos 6GB de RAM)
-          if pct > 0:
-              pat_heap = re.compile(r'(HEAP_MEMORY_PERCENT\s*\(\s*)0(\s*\))')
-              changed_heap = 0
-              for folder in ("src/freedreno/vulkan", "src/util"):
-                  base = pathlib.Path(folder)
-                  if not base.exists():
-                      continue
-                  for p in sorted(base.rglob("*")):
-                      if p.is_file() and p.suffix in (".c", ".cc", ".cpp", ".h", ".conf"):
-                          s = p.read_text(encoding="utf-8", errors="replace")
-                          new_s, k = pat_heap.subn(rf'\g<1>{pct}\g<2>', s)
-                          if k > 0:
-                              p.write_text(new_s, encoding="utf-8")
-                              changed_heap += k
-                              print(f"Heap ajustado para {pct}% em {p}")
-              if changed_heap == 0:
-                  sys.exit("ERRO: Macro HEAP_MEMORY_PERCENT(0) não encontrada.")
-
-          # 3. Aplica perfil TU_DEBUG opcional se selecionado
+          # 2. Aplica perfil TU_DEBUG opcional se selecionado
           if tu_dbg != "none":
               for p in sorted(pathlib.Path("src/freedreno/vulkan").rglob("tu_device.*")):
                   if p.suffix not in (".c", ".cc", ".cpp"):
@@ -256,7 +224,7 @@ jobs:
           PY
           git --no-pager diff -U2 | tee "$GITHUB_WORKSPACE/applied-patches.diff"
 
-      - name: Criar cross-file Android AArch64 (Otimizado para Kryo 585 / Adreno 650)
+      - name: Criar cross-file Android AArch64
         env:
           OPT_LEVEL: ${{ inputs.opt_level }}
         run: |
@@ -376,20 +344,13 @@ jobs:
             echo "Entrada Vulkan ICD encontrada: vk_icdGetInstanceProcAddr"
           else
             echo "::error::Não foi encontrado HMI, vkGetInstanceProcAddr nem vk_icdGetInstanceProcAddr."
-            echo "::error::Lista completa de símbolos exportados salva em elf-defined-symbols.txt."
             exit 1
           fi
-
-          echo "----- Referências AHardwareBuffer (informativo) -----"
-          "$BIN/llvm-nm" -D --undefined-only "$LIB_PATH" \
-            | grep -E 'AHardwareBuffer_(allocate|isSupported)' \
-            || echo "Nenhuma referência direta encontrada; isso não determina suporte/ausência de suporte."
 
       - name: Gerar metadados, símbolos e ZIP
         env:
           OPT_LEVEL: ${{ inputs.opt_level }}
           NDK_VERSION: ${{ inputs.ndk_version }}
-          HEAP_PERCENT: ${{ inputs.heap_percent }}
           TU_DBG: ${{ inputs.tu_debug_default }}
         run: |
           set -euo pipefail
@@ -404,18 +365,16 @@ jobs:
           SHORT_SHA="${MESA_SHA:0:10}"
           SHA256="$(sha256sum pkg/libvulkan_freedreno.so | awk '{print $1}')"
 
-          export DRIVER_NAME VERSION MESA_VER SHORT_SHA ANDROID_API OPT_LEVEL NDK_VERSION SHA256 HEAP_PERCENT TU_DBG
+          export DRIVER_NAME VERSION MESA_VER SHORT_SHA ANDROID_API OPT_LEVEL NDK_VERSION SHA256 TU_DBG
           python3 - <<'PY'
           import json, os
-          heap = os.environ["HEAP_PERCENT"]
-          heap_str = f"Heap {heap}% RAM" if heap != "0" else "Heap padrão"
           metadata = {
               "schemaVersion": 1,
               "name": f'{os.environ["DRIVER_NAME"]} v{os.environ["VERSION"]}',
               "description": (
                   f'Turnip Mesa {os.environ["MESA_VER"]} '
                   f'({os.environ["SHORT_SHA"]}) para Galaxy S20 FE 5G / Adreno 650. '
-                  f'{os.environ["OPT_LEVEL"]} + IEEE-754 FMA, {heap_str}, SELinux-Fix, TU_DEBUG={os.environ["TU_DBG"]}.'
+                  f'{os.environ["OPT_LEVEL"]} + IEEE-754 FMA, SELinux Hotpath Fix, TU_DEBUG={os.environ["TU_DBG"]}.'
               ),
               "author": "Turnip-S20FE custom build",
               "packageVersion": os.environ["VERSION"],
@@ -436,9 +395,8 @@ jobs:
           NDK:           ${NDK_VERSION}
           Android API:   ${ANDROID_API}
           Otimização:    ${OPT_LEVEL} + IEEE-754 FMA (sem LTO)
-          Heap Limit:    ${HEAP_PERCENT}%
           TU_DEBUG:      ${TU_DBG}
-          Patches:       SELinux SPIR-V/IR3 Hotpath Fix + Heap Memory Percent
+          Patches:       SELinux SPIR-V/IR3 Hotpath Fix
           SHA256:        ${SHA256}
           Data UTC:      $(date -u +%Y-%m-%dT%H:%M:%SZ)
           EOF
@@ -469,4 +427,53 @@ jobs:
             echo "### ${DRIVER_NAME} v${VERSION}"
             echo ""
             echo "- Mesa: \`${MESA_VER}\` (\`${SHORT_SHA}\`, ${MESA_DATE})"
-            echo "- Build: \`${OPT_LEVEL}\` 
+            echo "- Build: \`${OPT_LEVEL}\` + IEEE-754 FMA, LTO desativado, NDK ${NDK_VERSION}"
+            echo "- Otimizações S20 FE: SELinux Shader Hotpath Fix, TU_DEBUG=\`${TU_DBG}\`"
+            echo "- SHA-256: \`${SHA256}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publicar artefato do driver
+        uses: actions/upload-artifact@v4
+        with:
+          name: Turnip-S20FE-v${{ inputs.version }}
+          path: Turnip-S20FE-v${{ inputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publicar artefatos de diagnóstico
+        uses: actions/upload-artifact@v4
+        with:
+          name: Turnip-S20FE-v${{ inputs.version }}-diagnostics
+          path: symbols/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publicar GitHub Release (opcional)
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${MESA_SHA:0:10}"
+          TAG="v${VERSION}-${SHORT_SHA}"
+
+          cat > release_notes.md <<EOF
+          Build otimizado do Turnip para Galaxy S20 FE 5G (Snapdragon 865 / Adreno 650).
+
+          - Mesa: ${MESA_SHA} (${MESA_DATE})
+          - Android API: ${ANDROID_API}
+          - Build: ${OPT_LEVEL} + IEEE-754 FMA, LTO desativado
+          - Otimizações: SELinux Shader Hotpath Fix
+          - SHA-256: ${SHA256}
+          EOF
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP_NAME" --clobber
+          else
+            gh release create "$TAG" "$ZIP_NAME" \
+              --title "${DRIVER_NAME} v${VERSION} (${SHORT_SHA})" \
+              --notes-file release_notes.md
+          fi
+          echo "Release publicada: $TAG" >> "$GITHUB_STEP_SUMMARY"
+          
