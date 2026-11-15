@@ -51,6 +51,11 @@ on:
         required: false
         default: ""
         type: string
+      highlights:
+        description: "Destaques da release, separados por ; (opcional)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -75,6 +80,12 @@ jobs:
       contents: write
 
     steps:
+      - name: Obter scripts do repositório
+        uses: actions/checkout@v4
+        with:
+          path: ci
+          sparse-checkout: .github/scripts
+
       - name: Validar entradas
         env:
           MESA_REF: ${{ inputs.mesa_ref }}
@@ -353,9 +364,19 @@ jobs:
           GH_REPO: ${{ github.repository }}
           CHANNEL: ${{ inputs.channel }}
           SINCE: ${{ inputs.since }}
+          HIGHLIGHTS: ${{ inputs.highlights }}
+          NDK_VERSION: ${{ inputs.ndk_version }}
+          OPT_LEVEL: ${{ inputs.opt_level }}
+          TU_DBG: ${{ inputs.tu_debug_default }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           SHORT="${MESA_SHA:0:10}"
+          export MESA_VER="$(tr -d '\r\n ' < mesa/VERSION)"
+          if [ -z "$SINCE" ]; then
+            SINCE="$(gh release list --limit 1 --json publishedAt -q '.[0].publishedAt // empty' || true)"
+          fi
+          export SINCE
           ASSETS=("$ZIP_NAME")
           if [ "$CHANNEL" = "nightly" ]; then
             TAG="nightly-$(date -u +%Y%m%d)-${SHORT}"
@@ -368,21 +389,11 @@ jobs:
             cp "$ZIP_NAME" Turnip-S20FE.zip
             ASSETS+=(Turnip-S20FE.zip)
           fi
-          {
-            echo "Turnip para Galaxy S20 FE 5G (Snapdragon 865 / Adreno 650), canal ${CHANNEL}."
-            echo ""
-            echo "- Mesa: ${MESA_SHA} (${MESA_DATE})"
-            echo "- SHA-256 da biblioteca: ${SHA256}"
-            if [ -n "$SINCE" ]; then
-              echo ""
-              echo "### Mudanças do Turnip/freedreno no Mesa desde ${SINCE}"
-              curl -fsS "https://gitlab.freedesktop.org/api/v4/projects/mesa%2Fmesa/repository/commits?ref_name=main&path=src/freedreno&since=${SINCE}&per_page=40" \
-                | python3 -c 'import json,sys; [print("- "+c["short_id"]+" "+c["title"]) for c in json.load(sys.stdin)]' \
-                || echo "(changelog indisponível)"
-            fi
-          } > release_notes.md
+          python3 ci/.github/scripts/release_notes.py > release_notes.md
+          cat release_notes.md >> "$GITHUB_STEP_SUMMARY"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            gh release edit "$TAG" --notes-file release_notes.md
           else
             gh release create "$TAG" "${ASSETS[@]}" --title "$TITLE" --notes-file release_notes.md $FLAGS
           fi
