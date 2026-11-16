@@ -78,6 +78,7 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: write
+      issues: write
 
     steps:
       - name: Obter scripts do repositório
@@ -160,48 +161,8 @@ jobs:
           TU_DBG: ${{ inputs.tu_debug_default }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import os, pathlib, re
-          tu_dbg = os.environ["TU_DBG"].strip()
-
-          p = pathlib.Path("src/compiler/spirv/spirv_to_nir.c")
-          if p.is_file():
-              s = p.read_text(encoding="utf-8", errors="replace")
-              s, n = re.subn(r'os_get_option\s*\(\s*"MESA_SPIRV_(DUMP|READ)_PATH"\s*\)', 'NULL /* S20FE */', s)
-              if n:
-                  p.write_text(s, encoding="utf-8")
-              print(f"SPIR-V: {n} chamadas bloqueadas")
-
-          p = pathlib.Path("src/util/os_misc.c")
-          if p.is_file():
-              s = p.read_text(encoding="utf-8", errors="replace")
-              m = re.search(r'\bos_get_android_option\s*\(\s*const\s+char\s*\*\s*(\w+)\s*\)\s*\{', s)
-              if m and "S20FE_HOTPATH" not in s:
-                  a = m.group(1)
-                  ins = (f'\n   /* S20FE_HOTPATH */\n'
-                         f'   if (strstr({a}, "SPIRV") || strstr({a}, "IR3") || strstr({a}, "TRACE"))\n'
-                         f'      return NULL;\n')
-                  p.write_text(s[:m.end()] + ins + s[m.end():], encoding="utf-8")
-                  print("Hotpath aplicado")
-              elif not m:
-                  print("AVISO: os_get_android_option não encontrada")
-
-          if tu_dbg != "none":
-              for p in sorted(pathlib.Path("src/freedreno/vulkan").rglob("tu_device.*")):
-                  if p.suffix not in (".c", ".cc", ".cpp"):
-                      continue
-                  s = p.read_text(encoding="utf-8", errors="replace")
-                  m = re.search(r'\btu_CreateInstance\s*\([^)]*\)\s*\{', s)
-                  if m and "S20FE_TU_DEBUG" not in s:
-                      ins = f'\n   /* S20FE_TU_DEBUG */\n   setenv("TU_DEBUG", "{tu_dbg}", 0);\n'
-                      p.write_text(s[:m.end()] + ins + s[m.end():], encoding="utf-8")
-                      print(f"TU_DEBUG={tu_dbg} em {p}")
-                      break
-          PY
+          python3 "$GITHUB_WORKSPACE/ci/.github/scripts/patch_mesa.py"
           git --no-pager diff -U2 | tee "$GITHUB_WORKSPACE/applied-patches.diff"
-          if [ ! -s "$GITHUB_WORKSPACE/applied-patches.diff" ]; then
-            echo "::warning::Nenhum patch aplicado (diff vazio). As regex podem não casar com esta base."
-          fi
 
       - name: Criar cross-file
         env:
@@ -398,10 +359,33 @@ jobs:
             gh release create "$TAG" "${ASSETS[@]}" --title "$TITLE" --notes-file release_notes.md $FLAGS
           fi
           if [ "$CHANNEL" = "nightly" ]; then
-            gh release list --limit 100 --json tagName,isPrerelease -q '.[] | select(.isPrerelease) | .tagName' \
+            gh release list --limit 100 --json tagName,isPrerelease -q '.[] | select(.isPrerelease and (.tagName | startswith("nightly-"))) | .tagName' \
               | tail -n +6 | while read -r T; do
                 gh release delete "$T" --cleanup-tag --yes < /dev/null
               done
           fi
+
+      - name: Avisar falha do nightly (abre issue)
+        if: failure() && inputs.channel == 'nightly'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="Build nightly falhou"
+          BODY="O build automático falhou (Mesa ${MESA_SHA:-n/d}). Detalhes: ${RUN_URL}. O último driver publicado continua disponível em Releases."
+          N="$(gh issue list --state open --search '"Build nightly falhou" in:title' --json number -q '.[0].number // empty')"
+          if [ -n "$N" ]; then gh issue comment "$N" --body "$BODY"; else gh issue create --title "$TITLE" --body "$BODY"; fi
+
+      - name: Fechar aviso de falha anterior
+        if: success() && inputs.channel == 'nightly' && inputs.publish_release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh issue list --state open --search '"Build nightly falhou" in:title' --json number -q '.[].number' \
+            | while read -r N; do gh issue close "$N" --comment "Build nightly voltou a funcionar."; done
 
 # FIM DO ARQUIVO
