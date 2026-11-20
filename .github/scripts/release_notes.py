@@ -20,7 +20,7 @@ SECTIONS = [
     ("common", "🧱 Freedreno (A6xx e código comum)", "código compartilhado com o Adreno 650"),
 ]
 NOISE = {"ci", "docs", "meson", "tools", "tests", "test", "decode", "afuc", "computerator",
-         "cffdec", "cffdump", "rddecompiler", "replay"}
+         "cffdec", "cffdump", "rddecompiler", "replay", "crashdump", "deqp", "piglit"}
 
 
 def gens(text):
@@ -38,7 +38,7 @@ def classify(title):
         return "kgsl"
     if "autotune" in pre:
         return "autotune"
-    if parts and set(parts) <= NOISE | {"freedreno"} and set(parts) & NOISE:
+    if set(parts) & NOISE or title.lower().startswith("uprev"):
         return "infra"
     if "ir3" in parts:
         return "ir3"
