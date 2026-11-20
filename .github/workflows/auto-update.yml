@@ -25,6 +25,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      - name: Manter o agendamento ativo (evita desativação por inatividade)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh api -X PUT "repos/${GH_REPO}/actions/workflows/auto-update.yml/enable"
+
       - name: Comparar com o último build e disparar
         env:
           GH_TOKEN: ${{ github.token }}
