@@ -57,8 +57,21 @@ if tu_dbg != "none":
         s = read(p)
         m = re.search(r'\btu_CreateInstance\s*\([^)]*\)\s*\{', s)
         if m and "S20FE_TU_DEBUG" not in s:
-            ins = f'\n   /* S20FE_TU_DEBUG */\n   setenv("TU_DEBUG", "{tu_dbg}", 0);\n'
-            p.write_text(s[:m.end()] + ins + s[m.end():], encoding="utf-8")
+            # Junta com o TU_DEBUG que o app já definiu (ex.: noconform) em vez de ser ignorado.
+            ins = (f'\n   /* S20FE_TU_DEBUG */\n'
+                   f'   {{\n'
+                   f'      const char *s20fe_old = getenv("TU_DEBUG");\n'
+                   f'      char s20fe_buf[256];\n'
+                   f'      snprintf(s20fe_buf, sizeof(s20fe_buf), "%s%s{tu_dbg}",\n'
+                   f'               s20fe_old ? s20fe_old : "", (s20fe_old && *s20fe_old) ? "," : "");\n'
+                   f'      setenv("TU_DEBUG", s20fe_buf, 1);\n'
+                   f'   }}\n')
+            inc = re.search(r'^#include\b', s, re.M)
+            head = "#include <stdio.h>\n#include <stdlib.h>\n"
+            body = s[:m.end()] + ins + s[m.end():]
+            if inc:
+                body = body[:inc.start()] + head + body[inc.start():]
+            p.write_text(body, encoding="utf-8")
             print(f"TU_DEBUG={tu_dbg} em {p}")
             done = True
             break
