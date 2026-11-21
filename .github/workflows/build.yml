@@ -140,13 +140,22 @@ jobs:
           MESA_COMMIT: ${{ inputs.mesa_commit }}
         run: |
           set -euo pipefail
-          git clone --filter=tree:0 --no-checkout --branch "$MESA_REF" \
-            https://gitlab.freedesktop.org/mesa/mesa.git mesa
-          cd mesa
           REF="${MESA_COMMIT:-$MESA_REF}"
-          git rev-parse --verify --quiet "${REF}^{commit}" >/dev/null || {
-            echo "::error::$REF não está no histórico de $MESA_REF"; exit 1; }
-          git checkout --detach "$(git rev-parse "${REF}^{commit}")"
+          for TRY in 1 2 3 4; do
+            rm -rf mesa
+            if git clone --filter=tree:0 --no-checkout --branch "$MESA_REF" \
+                 https://gitlab.freedesktop.org/mesa/mesa.git mesa; then
+              git -C mesa rev-parse --verify --quiet "${REF}^{commit}" >/dev/null || {
+                echo "::error::$REF não está no histórico de $MESA_REF"; exit 1; }
+              if git -C mesa checkout --detach "$(git -C mesa rev-parse "${REF}^{commit}")"; then
+                break
+              fi
+            fi
+            [ "$TRY" -lt 4 ] || { echo "::error::Não consegui baixar o Mesa após 4 tentativas"; exit 1; }
+            echo "::warning::Download do Mesa falhou (tentativa $TRY de 4); nova tentativa em 20s"
+            sleep 20
+          done
+          cd mesa
           D="$(git log -1 --format=%cs)"
           echo "MESA_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "MESA_DATE=$D" >> "$GITHUB_ENV"
