@@ -46,6 +46,12 @@ on:
         type: choice
         options: [stable, nightly]
         default: stable
+      build_profile:
+        description: "Perfil de compilação (tuned = Cortex-A77 otimizado; safe = genérico conservador)"
+        required: true
+        type: choice
+        options: [tuned, safe]
+        default: tuned
       since:
         description: "Início do changelog em ISO (opcional, o vigia preenche)"
         required: false
@@ -176,10 +182,16 @@ jobs:
       - name: Criar cross-file
         env:
           OPT_LEVEL: ${{ inputs.opt_level }}
+          PROFILE: ${{ inputs.build_profile }}
         run: |
           set -euo pipefail
           BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          F="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT_LEVEL}', '-g1', '-fno-math-errno', '-fno-trapping-math', '-ffp-contract=on', '-fomit-frame-pointer', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
+          if [ "$PROFILE" = "safe" ]; then
+            F="'-O2', '-g1', '-fno-math-errno', '-fno-trapping-math', '-ffp-contract=off', '-fomit-frame-pointer', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
+          else
+            F="'-march=armv8.2-a+fp16+dotprod+crypto', '-mtune=cortex-a77', '-${OPT_LEVEL}', '-g1', '-fno-math-errno', '-fno-trapping-math', '-ffp-contract=on', '-fomit-frame-pointer', '-fno-plt', '-fdata-sections', '-ffunction-sections'"
+          fi
+          echo "Perfil de compilação: $PROFILE"
           cat > "$GITHUB_WORKSPACE/android-crossfile.txt" <<EOF
           [binaries]
           c = ['$BIN/aarch64-linux-android${ANDROID_API}-clang']
@@ -337,6 +349,7 @@ jobs:
           HIGHLIGHTS: ${{ inputs.highlights }}
           NDK_VERSION: ${{ inputs.ndk_version }}
           OPT_LEVEL: ${{ inputs.opt_level }}
+          BUILD_PROFILE: ${{ inputs.build_profile }}
           TU_DBG: ${{ inputs.tu_debug_default }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |

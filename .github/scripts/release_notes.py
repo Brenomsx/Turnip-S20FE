@@ -119,7 +119,9 @@ def build_notes(env, commits):
         ("Dispositivo", "Galaxy S20 FE 5G · Snapdragon 865 · Adreno 650"),
         ("Mesa", f"`{e('MESA_VER', '?')}` · [`{short}`](https://gitlab.freedesktop.org/mesa/mesa/-/commit/{sha}) · {e('MESA_DATE', '?')}"),
         ("Canal", "nightly (pré-release)" if nightly else "estável"),
-        ("Compilação", f"Clang (NDK {e('NDK_VERSION', '?')}) · API {e('ANDROID_API', '?')} · -{e('OPT_LEVEL', 'O3')} · FMA · sem LTO"),
+        ("Compilação", f"Clang (NDK {e('NDK_VERSION', '?')}) · API {e('ANDROID_API', '?')} · "
+                       + ("-O2 · genérico (perfil safe) · sem LTO" if e("BUILD_PROFILE") == "safe"
+                          else f"-{e('OPT_LEVEL', 'O3')} · FMA · sem LTO")),
         ("Patch SELinux (anti-spam no logcat)", patch_txt),
         ("TU_DEBUG embutido", f"`{e('TU_DBG', 'none')}`"),
         ("SHA-256 (libvulkan_freedreno.so)", f"`{e('SHA256', '?')}`"),
