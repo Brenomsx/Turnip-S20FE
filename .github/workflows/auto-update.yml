@@ -50,7 +50,7 @@ jobs:
             exit 0
           fi
 
-          SINCE="$(gh release list --limit 1 --json publishedAt -q '.[0].publishedAt // empty')"
+          SINCE="$(gh release list --limit 100 --json tagName,publishedAt -q '[.[] | select(.tagName | startswith("nightly-"))][0].publishedAt // empty')"
           gh workflow run build.yml \
             -f mesa_ref=main \
             -f mesa_commit="$SHA" \

@@ -334,8 +334,8 @@ jobs:
           set -euo pipefail
           SHORT="${MESA_SHA:0:10}"
           export MESA_VER="$(tr -d '\r\n ' < mesa/VERSION)"
-          if [ -z "$SINCE" ]; then
-            SINCE="$(gh release list --limit 1 --json publishedAt -q '.[0].publishedAt // empty' || true)"
+          if [ -z "$SINCE" ] && [ "$CHANNEL" = "nightly" ]; then
+            SINCE="$(gh release list --limit 100 --json tagName,publishedAt -q '[.[] | select(.tagName | startswith("nightly-"))][0].publishedAt // empty' || true)"
           fi
           export SINCE
           ASSETS=("$ZIP_NAME")

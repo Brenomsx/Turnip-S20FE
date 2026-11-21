@@ -132,7 +132,11 @@ def build_notes(env, commits):
             "3. Para voltar atrás, selecione o driver anterior no mesmo menu.", ""]
 
     out += ["## 🔄 O que mudou no Mesa", ""]
-    if not since:
+    if not since and not nightly:
+        out.append(f"Versão estável compilada do commit "
+                   f"[`{short}`](https://gitlab.freedesktop.org/mesa/mesa/-/commit/{sha}) do Mesa. "
+                   f"[Ver histórico no GitLab]({commits_url})")
+    elif not since:
         out.append("_Primeira release deste canal: não há base de comparação._")
     elif commits is None:
         out.append("_Lista de mudanças indisponível nesta execução._")
