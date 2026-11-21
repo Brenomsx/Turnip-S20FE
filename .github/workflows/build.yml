@@ -52,6 +52,11 @@ on:
         type: choice
         options: [tuned, safe]
         default: tuned
+      apply_patches:
+        description: "Aplicar os patches próprios (SELinux/hotpath). Desligue só para teste de diagnóstico"
+        required: true
+        type: boolean
+        default: true
       since:
         description: "Início do changelog em ISO (opcional, o vigia preenche)"
         required: false
@@ -174,9 +179,14 @@ jobs:
         working-directory: mesa
         env:
           TU_DBG: ${{ inputs.tu_debug_default }}
+          APPLY: ${{ inputs.apply_patches }}
         run: |
           set -euo pipefail
-          python3 "$GITHUB_WORKSPACE/ci/.github/scripts/patch_mesa.py"
+          if [ "$APPLY" = "true" ]; then
+            python3 "$GITHUB_WORKSPACE/ci/.github/scripts/patch_mesa.py"
+          else
+            echo "::notice::Patches próprios DESLIGADOS (build de diagnóstico, Mesa puro)"
+          fi
           git --no-pager diff -U2 | tee "$GITHUB_WORKSPACE/applied-patches.diff"
 
       - name: Criar cross-file
