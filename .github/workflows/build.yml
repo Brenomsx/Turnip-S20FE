@@ -33,7 +33,7 @@ on:
         description: "TU_DEBUG embutido (none recomendado)"
         required: true
         type: choice
-        options: [none, nolrz, sysmem]
+        options: [none, nolrz, sysmem, noubwc, nolrzfc, "noubwc,nolrz", "sysmem,noubwc"]
         default: none
       publish_release:
         description: "Publicar em Releases"
